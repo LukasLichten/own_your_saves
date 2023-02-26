@@ -1,0 +1,217 @@
+Commit File spec
+Name: SHA3-256 hash of the resulting file
+# Except Header (Named HEADER), and Branch Header (Named after the Branch)
+# In case of a folder we append all the file hashes, and then hash it again
+
+Content:
+Version - 1 byte
+# Version 255 can change doc to include multiple bytes, maintaining compatibilty
+
+Commit Type - 1 byte
+00 - Head
+01 - Branch Head
+02 - Edit
+03 - New File
+04 - Resize
+05 - Delete
+08 - Rename
+0D - New Folder
+0F - Folder
+10 - Commit Info
+# Edit, Resize and Rename can be combined with each other
+# New File implies Edit, this leaves 03, 05, 07, 09, 0B, 0D, 0F for special functions
+# Commit Info can be added to all types, except Head and Branch Head
+
+Previous Commit - 4 bytes
+# Sha3-256 hash
+# 00 00 00 00 - means this is the first commit
+# Not included in Head
+
+# UTF-8 spec
+#1 0xxxxxxx		128     2^7
+#2 110xxxxx	10xxxxxx		1920        2^11
+#3 1110xxxx	10xxxxxx	10xxxxxx		61440       2^16
+#4 11110xxx	10xxxxxx	10xxxxxx	10xxxxxx	1048576     2^21
+# For numbers we add
+#5 111110xx	10xxxxxx	10xxxxxx	10xxxxxx	10xxxxxx	66060288    2^26
+#6 1111110x	10xxxxxx	10xxxxxx	10xxxxxx	10xxxxxx	10xxxxxx	2081423360     2^31
+#7 11111110	10xxxxxx	10xxxxxx	10xxxxxx	10xxxxxx	10xxxxxx	10xxxxxx	66638053376     2^36
+#8 11111111	10xxxxxx	10xxxxxx	10xxxxxx	10xxxxxx	10xxxxxx	10xxxxxx    10xxxxxx	idk lol     2^42
+#
+# A 32 bit integer is 4 bytes, processed like this it is 7 bytes, but the advantage is smaller numbers can be processed in less bytes
+
+
+----------------------------------------------------------------
+Head - 00
+----------------------------------------------------------------
+# Defines important info
+# Needs only to be written every time there is a new branch created, or deleted
+
+Name - utf-8 char sequence
+# Name of this storage, although the meta data file can do the heavy lifting
+
+Number of Branches - 1 utf-8 character as a number
+# most will be one
+
+Branches:
+-------------
+# First Branch has to be master
+
+Branch Name - utf-8 character sequence
+# As the branch name is the name of the Branch Header File, we don't need any more info
+
+
+----------------------------------------------------------------
+Branch Head - 01
+----------------------------------------------------------------
+# Updates Every time there is a new commit, with the Previous Commit Value pointing to the new commit
+# So possible conflict when two save operations happen on the same storage and same branch
+# No Further information needed
+
+
+---------------------------------------------------------------
+Edit - 02
+---------------------------------------------------------------
+# block comes last
+
+Instructions:
+-------------
+Type - 1 byte
+01 Replace
+02 Blank 
+03 Set To
+04 Copy
+
+Pointer - 1-6 bytes
+# Pointer size is calculated based on file size
+# so a 32kb gb save would use a 2 byte pointer
+# fat32 max file would use a 4 byte pointer
+# pointer is from the start of the file
+
+Number of bytes to set - 1 utf-8 char as number
+# as long as sequence is shorter then 128 bytes we keep inside 1 byte
+# up to 2048 byte sequences we stay in 2 bytes
+# Alternative would be pointer size, which isn't efficient enough
+
+01 Replace
+-------------
+# Simple Replace instruction
+# As this instruction creates an overhead of 1 + pointer size + byte sequence size, example of 1 + 2 + 1,
+# it makes sense to just repeat write unchanged byte gaps of that size or smaller, aka make one bigger instruction
+
+Sequence of bytes
+# bytes to be written
+
+02 Blank
+-------------
+# Sets bytes to 00
+# No further data needed for this instruction
+# Not needed for new files
+
+03 Set to
+-------------
+# Sets the selected bytes to one and the same value
+
+Value - 1 byte
+
+04 Copy
+-------------
+# Copies the sequence bytes from source to this location
+# There is no need for a second size value, we just need a location
+# Important: Keep in mind instruction order! This will copy the data that has been constructed up till this point
+
+Source Pointer - 1-6 bytes
+# See The Definition of Pointer
+# Location where the sequence starts
+
+
+----------------------------------------------------------------
+New File - 03
+----------------------------------------------------------------
+
+File Size - 1 utf-8 character as a number
+# 1kb saves require 10 bits, optimum 2 bytes, utf-8 2 bytes
+# 32kb gb saves require 15 bits, optimum 2 bytes, utf-8 3 bytes
+# 406kb pk X save require 19 bits, optimum 3 bytes, utf-8 4 bytes
+# FAT32 max file size (4GB-1B, or 4294967295 Bytes) requires 32 bits, optimum 4 bytes, utf-8 7 bytes
+# These are acceptable losses, as most files are very small, but allows for scaling for larger files
+
+File Name - utf-8 characters
+# We use 00 NUL to end of the name
+# This is shorter then defining the length of the name ahead of time
+# includes . and file ending
+
+Instructions
+# See Edit
+# Starting with a file consisting out of only 00
+
+
+---------------------------------------------------------------
+Resize - 04
+---------------------------------------------------------------
+# block comes after Commit Info, before Rename
+# Resizing operation keeps existing data
+# but clamps it when downsizing
+# or adds 00 at the end of the file
+
+File Size - 1 utf-8 character as a number
+# See New File
+
+
+---------------------------------------------------------------
+Delete - 05
+---------------------------------------------------------------
+# No data required
+
+
+---------------------------------------------------------------
+Rename - 08
+---------------------------------------------------------------
+# block comes after Resize, but before Edit
+
+File Name - utf-8 characters
+# See New File
+
+
+----------------------------------------------------------------
+New Folder - 0D
+----------------------------------------------------------------
+# Compared to New File, we will use this for renaming the folder too
+
+Folder Name - utf-8 character sequence
+# Same as File Name, we terminate with a 00 NUL
+
+Files:
+# See Folder
+
+
+----------------------------------------------------------------
+Folder - 0F
+----------------------------------------------------------------
+# If we need to rename it we use New Folder, to delete use the regular Delete
+
+Files:
+-------------
+# Sub Folders are treated the same
+
+File Commit Hash - 4 bytes
+# Sha3-256 Hash of the Resulting file, also the name of the commit file
+
+
+----------------------------------------------------------------
+Commit Info - 10
+----------------------------------------------------------------
+# This Block comes first
+# Only one Commit Info needed per upload, attached to the root of the tree (single file it is attached to the file, with a folder it is that root folder)
+
+Commiting User - 4 bytes
+# User Data is stored centraliced, using a SHA3-256
+
+Text - utf-8 char sequence
+# If a single NUL, then there is no commit message
+
+Time Stamp - 1 utf-8 character as number
+# On the initial commit we save the current unix timestamp in seconds
+# From then on it is the offset from the previous commit
+# With the current data format we are restricted to 2^42, meaning till about the year 141,338, so enough.
+# If you are from the 142 millenium having to wade through my code and documentation, then I apoligice profusely, especially for your ancestors being foolish enough to reuse some code from some 3rd millenia weeb
