@@ -1,9 +1,13 @@
 Commit File spec
-Name: SHA3-224 hash of the resulting file (clamped to the first 128bits)
+Name:
+---------------------
+29 bytes in hex, last 28 bytes is SHA3-224 hash of the resulting file, 
 # Except Header (Named HEADER), and Branch Header (Named after the Branch)
 # In case of a folder we append all the file hashes, and then hash it again
 
 Content:
+---------------------
+
 Version - 1 byte
 # Version 255 can change doc to include multiple bytes, maintaining compatibilty
 
@@ -22,8 +26,8 @@ Commit Type - 1 byte
 # New File implies Edit, this leaves 03, 05, 07, 09, 0B, 0D, 0F for special functions
 # Commit Info can be added to all types, except Head and Branch Head
 
-Previous Commit - 16 bytes
-# Sha3-224 hash, but in 128bits
+Previous Commit - 29 bytes
+# Is also the file name of the previous commit file (see Name at top of this document)
 # 0x0 - means this is the first commit
 # Not included in Head
 
@@ -193,8 +197,8 @@ Files:
 -------------
 # Sub Folders are treated the same
 
-File Commit Hash - 16 bytes
-# Sha3-224 Hash of the Resulting file (clamped to 128bit), also the name of the commit file
+File Commit Hash - 29 bytes
+# Name of the commit file (Naming scheme see top of this document)
 
 
 ----------------------------------------------------------------
@@ -204,7 +208,10 @@ Commit Info - 10
 # Only one Commit Info needed per upload, attached to the root of the tree (single file it is attached to the file, with a folder it is that root folder)
 
 Commiting User - 4 bytes
-# User Data is stored centraliced, using a SHA3-256
+# User Data is stored centraliced
+# 4 billion user IDs should be enough for now
+# Increasing this in the future is none issue, as long as your user ID database still outputs the same 32bit user ID for the old users, which it should automatically
+# Also IDs the device/application
 
 Text - utf-8 char sequence
 # If a single NUL, then there is no commit message

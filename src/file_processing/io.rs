@@ -2,6 +2,7 @@ use std::{io, path::Path};
 use std::io::prelude::*;
 use std::fs::File;
 use sha3::Digest;
+use super::u232;
 
 // If this is compiled in 32bit then we would be restricted to 2gb files
 pub fn read_bytes(file_name: &Path) -> io::Result<Vec<u8>> {
@@ -49,17 +50,17 @@ pub fn write_bytes(file_name: &Path, list_of_bytes: Vec<u8>) -> io::Result<()> {
     
 }
 
-pub fn hash_data(list_of_bytes: &[u8]) -> u128{
+pub fn hash_data(list_of_bytes: &[u8]) -> u232::U232{
     let mut hasher = sha3::Sha3_224::new(); // Sha3_256::new();
 
     hasher.update(list_of_bytes);
     
     let res = hasher.finalize();
     
-    get_u128(res.as_slice())
+    u232::from_u8arr(res.as_slice())
 }
 
-pub fn hash_file(file_name: &Path) -> io::Result<u128> {
+pub fn hash_file(file_name: &Path) -> io::Result<u232::U232> {
     let res = read_bytes(file_name);
 
     if let Ok(bytes) = res {
@@ -75,7 +76,7 @@ pub fn hash_file(file_name: &Path) -> io::Result<u128> {
 pub fn get_u32 (data: &[u8]) -> u32 {
     let c = if data.len() > 4 { 4 } else { data.len() };
     let mut i = 0;
-    let mut bytes: [u8; 4] = [0,0,0,0];
+    let mut bytes: [u8; 4] = [0_u8; 4];
 
     while i < c {
         bytes[(4-c) + i] = data[i];
@@ -88,7 +89,7 @@ pub fn get_u32 (data: &[u8]) -> u32 {
 pub fn get_u64 (data: &[u8]) -> u64 {
     let c = if data.len() > 8 { 8 } else { data.len() };
     let mut i = 0;
-    let mut bytes: [u8; 8] = [0,0,0,0,0,0,0,0];
+    let mut bytes: [u8; 8] = [0_u8; 8];
 
     while i < c {
         bytes[(8-c) +i] = data[i];
@@ -98,18 +99,6 @@ pub fn get_u64 (data: &[u8]) -> u64 {
     u64::from_be_bytes(bytes)
 }
 
-pub fn get_u128 (data: &[u8]) -> u128 {
-    let c = if data.len() > 16 { 16 } else { data.len() };
-    let mut i = 0;
-    let mut bytes: [u8; 16] = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
-
-    while i < c {
-        bytes[(16-c) +i] = data[i];
-        i = i + 1;
-    }
-
-    u128::from_be_bytes(bytes)
-}
 
 // We use utf8 format to store numbers in scalable but compact ways
 pub fn get_utf8_value (data: &[u8]) -> (u64, usize) {
@@ -278,6 +267,8 @@ pub fn hex_string_to_bytes(text: &String) -> Vec<u8> {
     }
 
     let mut out = Vec::<u8>::new();
+
+    let text = text.to_ascii_uppercase(); //deals with the potential of lower case characters
 
     let mut iter = text.chars().into_iter();
     let mut temp = Option::<u8>::None;

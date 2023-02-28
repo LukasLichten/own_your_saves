@@ -1,5 +1,5 @@
 use std::{path::Path};
-use super::io;
+use super::{io,u232};
 
 pub fn read_storage_info(folder: &Path){
 
@@ -13,7 +13,7 @@ pub struct RepoFile {
     version: u8,
     name: String,
     content: Vec<RepoFileType>,
-    previous_commit: u128 //0 if not oplicable, or this is the first commit
+    previous_commit: u232::U232 //0 if not oplicable, or this is the first commit
 }
 
 pub enum RepoFileType {
@@ -26,7 +26,7 @@ pub enum RepoFileType {
     Delete,
     Rename(String),
     NewFolder(String),
-    Folder(Vec<u128>),
+    Folder(Vec<u232::U232>),
     CommitInfo(CommitInfo)
 }
 
@@ -122,7 +122,7 @@ impl RepoFile {
     }
 
     // Returns the pointer size, or the previous commit which may contain it
-    pub fn get_pointer_size(& self) -> Result<usize,u128> {
+    pub fn get_pointer_size(& self) -> Result<usize,u232::U232> {
         fn process_size(val: u64) -> usize {
             let bits = val.ilog2(); // technically this is one bit short
             let bytes = bits / 8 + 1; // but this means it handles the rounding
@@ -336,7 +336,7 @@ pub fn read_repo_file (file: &Path) -> std::io::Result<RepoFile> {
             version: data[0],
             name: file.file_name().unwrap().to_str().unwrap().to_string(),
             content: Vec::<RepoFileType>::new(),
-            previous_commit: 0
+            previous_commit: u232::new()
         };
 
         let mut typ = data[1];
@@ -372,8 +372,8 @@ pub fn read_repo_file (file: &Path) -> std::io::Result<RepoFile> {
             return Ok(repo_file); // No further data
         }
         
-        repo_file.previous_commit = io::get_u128(io::save_slice(&data, offset));
-        offset = offset + 16;
+        repo_file.previous_commit = u232::from_u8arr(io::save_slice(&data, offset));
+        offset = offset + u232::NUM_BYTES;
         
         
         if typ == 0x01 {
@@ -425,11 +425,11 @@ pub fn read_repo_file (file: &Path) -> std::io::Result<RepoFile> {
         }
         if typ == 0x0F {
             // Folder
-            let mut files = Vec::<u128>::new();
+            let mut files = Vec::<u232::U232>::new();
 
             while offset < data.len() {
-                files.push(io::get_u128(io::save_slice(&data, offset)));
-                offset = offset + 16;
+                files.push(u232::from_u8arr(io::save_slice(&data, offset)));
+                offset = offset + u232::NUM_BYTES;
             }
             repo_file.content.push(RepoFileType::Folder(files));
 
