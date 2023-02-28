@@ -1,10 +1,10 @@
-use std::io;
+use std::{io, path::Path};
 use std::io::prelude::*;
 use std::fs::File;
 use sha3::{Digest, Sha3_256};
 
 // If this is compiled in 32bit then we would be restricted to 2gb files
-pub fn read_bytes(file_name: String) -> io::Result<Vec<u8>> {
+pub fn read_bytes(file_name: &Path) -> io::Result<Vec<u8>> {
     let mut list = Vec::<u8>::new(); 
 
     let res = File::open(file_name.clone());
@@ -18,7 +18,7 @@ pub fn read_bytes(file_name: String) -> io::Result<Vec<u8>> {
                 if len == meta.len() { //Only if the full file got read we may let him exit
                     return io::Result::Ok(list);
                 } else {
-                    return io::Result::Err(io::Error::new(io::ErrorKind::InvalidData, format!("Lenth of Data loaded from file {} does not match file length", file_name)));
+                    return io::Result::Err(io::Error::new(io::ErrorKind::InvalidData, format!("Lenth of Data loaded from file {} does not match file length", file_name.to_str().unwrap())));
                 }
             }
         } else if let Err(e) = res {
@@ -31,7 +31,7 @@ pub fn read_bytes(file_name: String) -> io::Result<Vec<u8>> {
     io::Result::Err(io::Error::new(io::ErrorKind::Other, "Failed to read File"))
 }
 
-pub fn write_bytes(file_name: String, list_of_bytes: Vec<u8>) -> io::Result<()> {
+pub fn write_bytes(file_name: &Path, list_of_bytes: Vec<u8>) -> io::Result<()> {
     let res = File::options().write(true).create(true).open(file_name);
     if let Ok(mut f) = res {
         let res = f.set_len(list_of_bytes.len().try_into().unwrap()); 
@@ -49,20 +49,20 @@ pub fn write_bytes(file_name: String, list_of_bytes: Vec<u8>) -> io::Result<()> 
     
 }
 
-pub fn hash_data(list_of_bytes: &Vec<u8>) -> u32{
+pub fn hash_data(list_of_bytes: &[u8]) -> u32{
     let mut hasher = Sha3_256::new();
 
-    hasher.update(list_of_bytes.as_slice());
+    hasher.update(list_of_bytes);
     
     let res = hasher.finalize();
     get_u32(res.as_slice())
 }
 
-pub fn hash_file(file_name: String) -> io::Result<u32> {
+pub fn hash_file(file_name: &Path) -> io::Result<u32> {
     let res = read_bytes(file_name);
 
     if let Ok(bytes) = res {
-        return Ok(hash_data(&bytes));
+        return Ok(hash_data(&bytes[..]));
     }
 
     Err(res.unwrap_err())
@@ -72,15 +72,29 @@ pub fn hash_file(file_name: String) -> io::Result<u32> {
 // This deals with the issue that from_be_bytes requires a u8,4 array, and can not handle a simple &u8 pointer 
 // This maybe moved out of this module
 pub fn get_u32 (data: &[u8]) -> u32 {
-    let mut i = if data.len() > 4 { 4 } else { data.len() };
+    let c = if data.len() > 4 { 4 } else { data.len() };
+    let mut i = 0;
     let mut bytes: [u8; 4] = [0,0,0,0];
 
-    while i > 0 {
-        i = i - 1;
-        bytes[i] = data[i];
+    while i < c {
+        bytes[(4-c) + i] = data[i];
+        i = i + 1;
     }
 
     u32::from_be_bytes(bytes)
+}
+
+pub fn get_u64 (data: &[u8]) -> u64 {
+    let c = if data.len() > 8 { 8 } else { data.len() };
+    let mut i = 0;
+    let mut bytes: [u8; 8] = [0,0,0,0,0,0,0,0];
+
+    while i < c {
+        bytes[(8-c) +i] = data[i];
+        i = i + 1;
+    }
+
+    u64::from_be_bytes(bytes)
 }
 
 // We use utf8 format to store numbers in scalable but compact ways
@@ -267,3 +281,42 @@ pub fn hex_string_to_bytes(text: &String) -> Vec<u8> {
 
     out
 }
+
+pub fn read_string_sequence(data: &[u8]) -> (String,usize) {
+    let mut index = 0;
+    while index < data.len() && data[index] != 0_u8 {
+        index = index + 1;
+    }
+
+    
+    if index != 0 {
+        if let Ok(val) = String::from_utf8(data[..index].to_vec()) {
+            return (val, index + 1);
+        }
+    }
+    
+    (String::new(),index + 1)
+}
+
+// used to prevent panics from overflows
+pub fn save_slice(data: &[u8], offset: usize) -> &[u8] {
+    if offset < data.len() {
+        return &data[offset..];
+    } else {
+        return &[0_u8];
+    }
+}
+
+pub fn save_cut(data: &[u8], size: usize) -> &[u8] {
+    let mut size = size;
+    if size < data.len() {
+        size = data.len();
+    }
+
+    return &data[..size];
+}
+
+pub fn u64_to_usize(val: u64) -> usize {
+    val.try_into().unwrap_or_default() //this might cause problems for 32bit, but f them
+}
+

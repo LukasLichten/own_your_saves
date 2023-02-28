@@ -12,9 +12,9 @@ Commit Type - 1 byte
 01 - Branch Head
 02 - Edit
 03 - New File
-04 - Resize
+04 - Rename
 05 - Delete
-08 - Rename
+08 - Resize
 0D - New Folder
 0F - Folder
 10 - Commit Info
@@ -145,16 +145,12 @@ Instructions
 # See Edit
 # Starting with a file consisting out of only 00
 
-
 ---------------------------------------------------------------
-Resize - 04
+Rename - 04
 ---------------------------------------------------------------
-# block comes after Commit Info, before Rename
-# Resizing operation keeps existing data
-# but clamps it when downsizing
-# or adds 00 at the end of the file
+# block comes after Resize, but before Edit
 
-File Size - 1 utf-8 character as a number
+File Name - utf-8 characters
 # See New File
 
 
@@ -165,11 +161,14 @@ Delete - 05
 
 
 ---------------------------------------------------------------
-Rename - 08
+Resize - 08
 ---------------------------------------------------------------
-# block comes after Resize, but before Edit
+# block comes after Commit Info, before Rename
+# Resizing operation keeps existing data
+# but clamps it when downsizing
+# or adds 00 at the end of the file
 
-File Name - utf-8 characters
+File Size - 1 utf-8 character as a number
 # See New File
 
 

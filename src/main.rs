@@ -1,3 +1,5 @@
+use std::path::Path;
+
 pub mod file_processing;
 
 fn main() {
@@ -6,12 +8,12 @@ fn main() {
     let (num2, b) = file_processing::io::get_utf8_value(res.as_slice());
     println!("{}\n{}\t{}", num, num2, b);
 
-
+    
 
     //Testing code
-    let test_file_loc = "planning/sav/Y.sav".to_string();
+    let test_file_loc = Path::new("planning/sav/Y.sav");
     //let test_file_loc = "planning/sav/20221004-Beaten/main".to_string();
-    let test_file_tar = "planning/sav/tar.sav".to_string();
+    let test_file_tar = Path::new("planning/sav/tar.sav");
     if let Ok(data)  = file_processing::io::read_bytes(test_file_loc) {
         let og_hash = file_processing::io::hash_data(&data);
 
