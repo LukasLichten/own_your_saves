@@ -1,5 +1,5 @@
 Commit File spec
-Name: SHA3-256 hash of the resulting file
+Name: SHA3-224 hash of the resulting file (clamped to the first 128bits)
 # Except Header (Named HEADER), and Branch Header (Named after the Branch)
 # In case of a folder we append all the file hashes, and then hash it again
 
@@ -22,9 +22,9 @@ Commit Type - 1 byte
 # New File implies Edit, this leaves 03, 05, 07, 09, 0B, 0D, 0F for special functions
 # Commit Info can be added to all types, except Head and Branch Head
 
-Previous Commit - 4 bytes
-# Sha3-256 hash
-# 00 00 00 00 - means this is the first commit
+Previous Commit - 16 bytes
+# Sha3-224 hash, but in 128bits
+# 0x0 - means this is the first commit
 # Not included in Head
 
 # UTF-8 spec
@@ -193,8 +193,8 @@ Files:
 -------------
 # Sub Folders are treated the same
 
-File Commit Hash - 4 bytes
-# Sha3-256 Hash of the Resulting file, also the name of the commit file
+File Commit Hash - 16 bytes
+# Sha3-224 Hash of the Resulting file (clamped to 128bit), also the name of the commit file
 
 
 ----------------------------------------------------------------

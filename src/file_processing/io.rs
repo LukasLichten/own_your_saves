@@ -1,7 +1,7 @@
 use std::{io, path::Path};
 use std::io::prelude::*;
 use std::fs::File;
-use sha3::{Digest, Sha3_256};
+use sha3::Digest;
 
 // If this is compiled in 32bit then we would be restricted to 2gb files
 pub fn read_bytes(file_name: &Path) -> io::Result<Vec<u8>> {
@@ -49,16 +49,17 @@ pub fn write_bytes(file_name: &Path, list_of_bytes: Vec<u8>) -> io::Result<()> {
     
 }
 
-pub fn hash_data(list_of_bytes: &[u8]) -> u32{
-    let mut hasher = Sha3_256::new();
+pub fn hash_data(list_of_bytes: &[u8]) -> u128{
+    let mut hasher = sha3::Sha3_224::new(); // Sha3_256::new();
 
     hasher.update(list_of_bytes);
     
     let res = hasher.finalize();
-    get_u32(res.as_slice())
+    
+    get_u128(res.as_slice())
 }
 
-pub fn hash_file(file_name: &Path) -> io::Result<u32> {
+pub fn hash_file(file_name: &Path) -> io::Result<u128> {
     let res = read_bytes(file_name);
 
     if let Ok(bytes) = res {
@@ -95,6 +96,19 @@ pub fn get_u64 (data: &[u8]) -> u64 {
     }
 
     u64::from_be_bytes(bytes)
+}
+
+pub fn get_u128 (data: &[u8]) -> u128 {
+    let c = if data.len() > 16 { 16 } else { data.len() };
+    let mut i = 0;
+    let mut bytes: [u8; 16] = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+
+    while i < c {
+        bytes[(16-c) +i] = data[i];
+        i = i + 1;
+    }
+
+    u128::from_be_bytes(bytes)
 }
 
 // We use utf8 format to store numbers in scalable but compact ways

@@ -23,7 +23,7 @@ fn main() {
 
                 println!("{}\n{}", og_hash, new_hash);
                 let h = file_processing::io::bytes_to_hex_string(&og_hash.to_be_bytes());
-                let hh = file_processing::io::get_u32(file_processing::io::hex_string_to_bytes(&h).as_slice());
+                let hh = file_processing::io::get_u128(file_processing::io::hex_string_to_bytes(&h).as_slice());
                 println!("{}\n{}", h, hh);
             }
         }
