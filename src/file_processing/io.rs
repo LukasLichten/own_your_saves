@@ -50,6 +50,10 @@ pub fn write_bytes(file_name: &Path, list_of_bytes: Vec<u8>) -> io::Result<()> {
     
 }
 
+pub fn create_folder(folder_path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(folder_path)
+}
+
 pub fn hash_data(list_of_bytes: &[u8]) -> u232::U232{
     let mut hasher = sha3::Sha3_224::new(); // Sha3_256::new();
 

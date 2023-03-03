@@ -41,7 +41,7 @@ impl StorageRepo {
 
         if self.header.reread_file(folder.as_path()) {
             // Header was changed, possibly a new branch, so remove all branches and re-add them
-            if let RepoFileType::Head(head_info) = &self.header.content[0] {
+            if let RepoFileType::Head(head_info) = &self.header.get_type(0x00) {
                 let head_info = head_info.clone();
                 self.get_branches(&head_info);
             } else {
@@ -61,14 +61,15 @@ impl StorageRepo {
         let mut file = PathBuf::from(&self.folder);
 
         if self.commits.contains_key(&id) {
-            let mut commit = self.commits[&id].clone(); // We have the data already cached
 
-            if commit.reread_file(file.as_path()) {
-                // There has been a change, updating cached
-                self.commits.insert(id, commit);
-            }
+            // This would update the object
+            // let mut commit = self.commits[&id].clone();
+            // if commit.reread_file(file.as_path()) {
+            //     // There has been a change, updating cached
+            //     self.commits.insert(id, commit);
+            // }
 
-            return Ok(&self.commits[&id]); 
+            return Ok(&self.commits[&id]);
         }
 
         file.push(io::bytes_to_hex_string(id.to_be_bytes()));
@@ -88,6 +89,10 @@ impl StorageRepo {
         ))
     }
 
+    pub fn insert_commit(&mut self, commit: RepoFile) {
+        self.commits.insert(u232::from_u8arr(io::hex_string_to_bytes(&commit.name).as_slice()), commit);
+    }
+
     fn get_branches(&mut self, header_info: &Head) {
         self.branches = Vec::<RepoFile>::new(); // Emptying, before adding new ones
 
@@ -102,6 +107,136 @@ impl StorageRepo {
                 }
             }
         }
+    }
+
+    pub fn build_commit(&mut self, commit_id: u232::U232, target_folder: &Path) {
+        if let Ok(repo_file) = self.get_commit(commit_id){
+            let repo_file = repo_file.clone();
+
+            if let RepoFileType::Folder(_d) = repo_file.get_type(0x0F) {
+                self.build_folder(&repo_file, target_folder);
+            } else {
+                self.build_file(&repo_file, target_folder);
+            }
+        }
+    }
+
+    fn build_file(&mut self, repo_file: &RepoFile, target_folder: &Path) {
+        let mut stack = Vec::<RepoFile>::new();
+
+        let mut max_file_size:usize = 0;
+        let mut cur_file_size:usize = 0;
+        let mut file_name = String::new();
+
+        let mut temp = repo_file.clone();
+        while let RepoFileType::None = temp.get_type(0x03) { // New File, aka it returns None if it is not contained, therefore let us continue iterating
+            // Let us also check for the largest file size, needed for defining the size of our build file
+            if let RepoFileType::Resize(size) = temp.get_type(0x08) {
+                let size = size.clone().try_into().unwrap();
+                if size > max_file_size {
+                    max_file_size = size;
+                }
+
+                // Only update cur_file_size on the first resize
+                if cur_file_size == 0 {
+                    cur_file_size = size;
+                }
+            }
+            // As we are iterating into the past we take the first occurence of a new name and save it. We do not need older names
+            if file_name.is_empty() {
+                if let RepoFileType::Rename(name) = temp.get_type(0x04) {
+                    file_name = name.clone();
+                }
+            }
+
+            // The iteration part
+            if let Ok(t) = self.get_commit(temp.previous_commit) {
+                stack.push(temp);
+                temp = t.clone();
+            } else {
+                //idk, either we got an error on io, or reached the first commit without a new file
+                break; // But we have to break, else risk a deadlock
+            }
+        }
+
+        let mut data: Vec<u8> = vec![0_u8; max_file_size];
+        let mut pointer_size: usize = 0;
+
+        // Executing the code
+        while let Some(item) = stack.pop() {
+            let res = item.get_type(0x02);
+            
+            if let RepoFileType::Edit(ins, p_size) = res {
+                pointer_size = p_size.clone(); // We update the pointer size for future repo files
+
+                let mut iter = ins.iter();
+                while let Some(instruction) = iter.next() {
+                    instruction.run_instruction(&mut data);
+                }
+            } else if let RepoFileType::EditNotProcessed(_bytes) = res {
+                if let Ok(p_size) = item.get_pointer_size() { // In case there was a resize on this commit
+                    pointer_size = p_size;
+                }
+
+                // Processing Instructions
+                let mut item = item;
+                item.parse_edit_instructions(pointer_size);
+
+                // Running instructions
+                if let RepoFileType::Edit(ins, _p) = item.get_type(0x02) {
+                    let mut iter = ins.iter();
+                    while let Some(instruction) = iter.next() {
+                        instruction.run_instruction(&mut data);
+                    }
+                }
+
+                // Updating cache
+                self.insert_commit(item);
+            } else if let Ok(p_size) = item.get_pointer_size() {
+                // This is for the special case that there was no edit instruction, but a resize instruction, so we update that for future commits
+                pointer_size = p_size.clone(); 
+            }
+        }
+
+        let mut file = PathBuf::from(target_folder);
+        file.push(file_name);
+
+        data = data[..cur_file_size].to_vec(); // setting the correct file size
+
+        io::write_bytes(file.as_path(), data);
+
+    }
+
+    fn build_folder(&mut self, repo_file: &RepoFile, target_folder: &Path) {
+        let mut folder_path = PathBuf::from(target_folder.as_os_str());
+
+        let mut temp = repo_file.clone();
+        while let RepoFileType::None = temp.get_type(0x0D) { // New Folder, aka it returns None if it is not contained, therefore let us continue iterating
+            if let Ok(t) = self.get_commit(temp.previous_commit) {
+                temp = t.clone();
+            } else {
+                //idk, either we got an error on io, or reached the first commit without a new folder
+                break; // But we have to break, else risk a deadlock
+            }
+        }
+
+        // Creating the folder
+        if let RepoFileType::NewFolder(name) = temp.get_type(0x0D) {
+            folder_path.push(name);
+            if let Err(e) = io::create_folder(folder_path.as_path()) {
+                // TODO
+            }
+        }
+
+        // Building the folder
+        if let RepoFileType::Folder(items) = repo_file.get_type(0x0F) {
+            let mut iter = items.iter();
+            while let Some(commit) = iter.next() {
+                self.build_commit(commit.clone(), folder_path.as_path());
+            }
+        }
+
+
     }
 }
 
@@ -126,7 +261,8 @@ pub enum RepoFileType {
     Rename(String),
     NewFolder(String),
     Folder(Vec<u232::U232>),
-    CommitInfo(CommitInfo)
+    CommitInfo(CommitInfo),
+    None
 }
 
 #[derive(Clone)]
@@ -162,6 +298,13 @@ pub trait Writtable {
     fn to_bytes(& self) -> Vec<u8>;
 }
 
+pub enum WritingStates {
+    NotNecessary,
+    Ok,
+    Conflict(Vec<u8>),
+    Err(std::io::Error)
+}
+
 impl RepoFile {
     pub fn reread_file(&mut self, folder: &Path) -> bool {
         let mut file = PathBuf::from(folder.as_os_str());
@@ -176,7 +319,7 @@ impl RepoFile {
                 //Processing Edit, if possible
                 if let Ok(pointer_size) = other.get_pointer_size()  {
                     other.parse_edit_instructions(pointer_size);
-                } else if let RepoFileType::Edit(_ins, pointer_size) = &self.content[&self.content.len() - 1] {
+                } else if let RepoFileType::Edit(_ins, pointer_size) = &self.get_type(0x02) {
                     other.parse_edit_instructions(pointer_size.clone());
                 }
 
@@ -189,6 +332,47 @@ impl RepoFile {
         }
 
         return false;
+    }
+
+    pub fn write_file_back(& self, folder: &Path) -> WritingStates{
+        let mut file = PathBuf::from(folder.as_os_str());
+        file.push(&self.name);
+
+        // We check if anything changed
+        let data = self.to_bytes();
+        if self.repo_file_hash == io::hash_data(data.as_slice()) {
+            return WritingStates::NotNecessary;
+        }
+
+        // We check if the file changed since last pull
+        if file.exists() {
+            let res = io::read_bytes(file.as_path());
+            if let Ok(file_data) = res {
+                let hash = io::hash_data(file_data.as_slice());
+    
+                if hash != self.repo_file_hash {
+                    // File has been updated since last pull
+                    return WritingStates::Conflict(data);
+                }
+            } else if let Err(e) = res {
+                return WritingStates::Err(e);
+            }
+        }
+
+        // Technically, we have an issue here if the name of this file changes
+        // This would happen if a branch is renamed, or the instructions to create the file changed in a way to produce a different outcome, producing a different hash and so a different commit name
+        // In both cases, self.name must be updated prior to calling this function
+        // The result is that the old files will stay behind, which is also an advantage, as any unaccounted references can still referre and function with them
+        // maybe periodical clean up is required
+
+        // We write the data
+        let res = io::write_bytes(file.as_path(), data);
+        if let Err(e) = res {
+            return WritingStates::Err(e);
+        }
+
+
+        WritingStates::Ok
     }
 
     pub fn parse_edit_instructions(&mut self, pointer_size: usize) {
@@ -252,34 +436,66 @@ impl RepoFile {
         }
     }
 
+    pub fn get_type(& self, typ: u8) -> &RepoFileType {
+        let mut iter = self.content.iter();
+        while let Some(element) = iter.next(){
+            match element {
+                RepoFileType::Head(_d) => if typ == 0x00 {
+                    return element;
+                },
+                RepoFileType::BranchHead => if typ == 0x01 {
+                    return element;
+                },
+                RepoFileType::Edit(_d,_s) =>  if typ == 0x02 {
+                    return element;
+                },
+                RepoFileType::EditNotProcessed(_d) =>  if typ == 0x02 {
+                    return element;
+                },
+                RepoFileType::NewFile => if typ == 0x03 {
+                    return element;
+                },
+                RepoFileType::Rename(_d) => if typ == 0x04 {
+                    return element;
+                },
+                RepoFileType::Delete => if typ == 0x05 {
+                    return element;
+                },
+                RepoFileType::Resize(_d) => if typ == 0x08 {
+                    return element;
+                },
+                RepoFileType::NewFolder(_d) => if typ == 0x0D {
+                    return element;
+                },
+                RepoFileType::Folder(_d) => if typ == 0x0F {
+                    return element;
+                },
+                RepoFileType::CommitInfo(_d) => if typ == 0x10 {
+                    return element;
+                },
+                RepoFileType::None => ()
+            }
+        }
+
+
+
+        &RepoFileType::None
+    }
+
     // Returns the pointer size, or the previous commit which may contain it
     pub fn get_pointer_size(& self) -> Result<usize,u232::U232> {
-        fn process_size(val: u64) -> usize {
+        if let RepoFileType::Resize(val) = self.get_type(0x08) {
             let bits = val.ilog2(); // technically this is one bit short
             let bytes = bits / 8 + 1; // but this means it handles the rounding
                                       // for example 16bits is log2=15 is 15/8 = 1 + 1 = 2
                                       // 17 bits is log2=16 is 16/8 = 2 + 1 = 3
 
-            bytes.try_into().unwrap_or_default()
-        }
-
-        if let RepoFileType::Resize(val) = self.content[0] {
-            return Ok(process_size(val));
-        }
-        if self.content.len() > 1 {
-            if let RepoFileType::Resize(val) = self.content[1] { // In case we have commit info included, which is the first element in content then
-                return Ok(process_size(val));
-            }
-
-            if self.content.len() > 2 {
-                if let RepoFileType::Resize(val) = self.content[2] { // In case we have commit info included and this is a new file...
-                    return Ok(process_size(val));
-                }
-            }
+            
+            return Ok(bytes.try_into().unwrap_or_default());
         }
 
         // If this file has processed edit, we have a pointer size
-        if let RepoFileType::Edit(_ins, pointer_size) = &self.content[&self.content.len() - 1] {
+        if let RepoFileType::Edit(_ins, pointer_size) = self.get_type(0x02) {
             return Ok(pointer_size.clone());
         }
 
