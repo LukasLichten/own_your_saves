@@ -109,6 +109,212 @@ impl StorageRepo {
         }
     }
 
+    pub fn create_commit(&mut self, prev_commit_id: u232::U232, location: &Path, branch_name: String) {
+        if let Ok(repo_file) = self.get_commit(prev_commit_id){
+            let repo_file = repo_file.clone();
+            if let RepoFileType::Folder(files) = repo_file.get_type(0x0F) {
+
+            }
+
+            self.create_file_commit(Some(&repo_file), location);
+        }
+
+
+    }
+
+    fn create_file_commit(&mut self, prev_commit: Option<&RepoFile>, location: &Path) -> Option<RepoFile> {
+        let (new_data, mut old_data, new_hash, rename, prev_com_id) =
+            if let Some(prev) = prev_commit {
+            
+            if let Ok(new_data) = io::read_bytes(location) {
+                let new_hash = io::hash_data(new_data.as_slice());
+                let old_id = u232::from_u8arr(io::hex_string_to_bytes(&prev.name).as_slice());
+
+                if new_hash == old_id {
+                    // no changes in the file, return the Prev commit
+                    return Some(prev.clone());
+                }
+
+                let (loc, old_data) = self.build_file(prev, location);
+
+                let rename = if loc.file_name() != location.file_name() {
+                    Some(location.file_name())
+                } else {
+                    None
+                };
+
+                (new_data, old_data, new_hash, rename, old_id)
+            } else {
+                //TODO handling this case properly
+                return None;
+            }
+        } else {
+            // First commit
+            if let Ok(new_data) = io::read_bytes(location) {
+                let new_hash = io::hash_data(new_data.as_slice());
+
+                (new_data, vec![0_u8;0], new_hash, Some(location.file_name()), u232::new())
+            } else {
+                //TODO handling this case properly
+                return None;
+            }
+        };
+        
+        let mut repo_file = RepoFile {
+            name: new_hash.to_string(),
+            version: 0, // Current version
+            previous_commit: prev_com_id,
+            content: Vec::<RepoFileType>::new(),
+            repo_file_hash: u232::new(),
+        };
+
+        // New File
+        if repo_file.previous_commit == u232::new() {
+            repo_file.content.push(RepoFileType::NewFile);
+        }
+
+        // Resize
+        if old_data.len() != new_data.len() {
+            repo_file.content.push(RepoFileType::Resize(new_data.len().try_into().unwrap()));
+
+            // Resizing old_data so we can compare
+            if old_data.len() > new_data.len() {
+                old_data = old_data[..new_data.len()].to_vec();
+            } else {
+                old_data.append(&mut vec![0_u8; new_data.len() - old_data.len()])
+            }
+        }
+
+        // Rename
+        if let Some(name) = rename {
+            let name = name.unwrap().to_str().unwrap().to_string();
+            repo_file.content.push(RepoFileType::Rename(name));
+        }
+
+        // Edit
+        let mut diff = Vec::<(usize, u8)>::new();
+        let mut index = 0;
+        while index < new_data.len() {
+            if new_data[index] != old_data[index] {
+                diff.push((index, new_data[index]));
+            }
+            index = index + 1;
+        }
+
+        let mut instructions = Vec::<Instruction>::new();
+
+        
+        let pointer_size: usize = ((new_data.len().ilog2()) / 8 + 1).try_into().unwrap();
+        let ins_overhead = 1 + pointer_size + 1; // Type Byte + Pointer Bytes + Minimum Bytes to define Length
+
+        // Generating instructions, improvements here can severely reduce file size and instruction count, without changing compatibility
+        index = 0;
+        while index < diff.len() {
+            let mut add_index = 1;
+
+            let mut block = vec![diff[index].1;1];
+
+            let mut single_type: bool = true;
+
+            // Building a sequence to process in the instruction
+            while (index + add_index) < diff.len() {
+                let (last_offset, _o) = diff[index + add_index - 1];
+                let (offset, val) = diff[index + add_index];
+
+                if offset > last_offset + 1 {
+                    // Meaning there is at least one unchanged byte interrupting the sequence, it maybe worth just writing those again
+                    if offset > last_offset + ins_overhead {
+                        // The gap is so large, it is more efficient to just start a new instruction
+                        break;
+                    } else if single_type && block[0] != val && block.len() > ins_overhead {
+                        // Maintain single type and exit
+                        break;
+
+                    } else {
+                        // We need to add the inbetween bytes to the block
+                        let mut add_offset = 1;
+                        while last_offset + add_offset <= offset { // = as we just let it also add the new item
+                            let val = new_data[last_offset + add_offset];
+                            
+                            // If this has been a single type sequence we have to check
+                            if single_type && val != block[0] {
+                                if (block.len() - add_offset + 1) > ins_overhead {
+                                    // We remove the items that are not needed and exit
+                                    block = block[..(block.len() - add_offset + 1)].to_vec();
+                                    break;
+                                } else {
+                                    single_type = false;
+                                    block.push(val);
+                                }
+                            } else {
+                                block.push(val);
+                            }
+
+                            add_offset = add_offset + 1;
+                        }
+                    }
+                    
+                } else {
+                    // This is a simple sequence
+
+                    // However we still want to check if we are still a single_type sequence
+                    if single_type && block[0] != val {
+                        // single_type sequence would get interrupted when adding this, we need to compute if it is worth making a new instruction, or switchting type
+                        if block.len() > ins_overhead {
+                            // We end this sequence
+                            break;
+                        } else {
+                            // Not worth it, continuing
+                            single_type = false;
+                            block.push(val);
+                        }
+                    } else {
+                        // We just continue
+                        block.push(val);
+                    }
+                }
+
+                add_index = add_index + 1;
+            }
+
+            // Constructing the Instruction
+            let op = if single_type {
+                let val = block[0]; 
+                if val == 0x00 {
+                    Operation::Blank
+                } else {
+                    Operation::SetTo(val)
+                }
+            } else {
+                // TODO check existing bytes for match to do a copy on
+                Operation::Replace(block.clone())
+            };
+
+            let ins = Instruction {
+                pointer: diff[index].0,
+                num_bytes: block.len(),
+                operation: op
+            };
+
+            // we test the instructions to see if we get the correct result in the end
+            ins.run_instruction(&mut old_data);
+
+            instructions.push(ins);
+
+            index = index + add_index - 1;
+        }
+
+        // Check of the instructions:
+        if new_hash != io::hash_data(old_data.as_slice()) {
+            panic!("TODO write error handling for when instructions are incorrectly generating, producing a file that does not match\nTarget Hash:{}\nResulting Hash:{}",new_hash,io::hash_data(old_data.as_slice()));
+        }
+        
+        repo_file.content.push(RepoFileType::Edit(instructions, pointer_size));
+
+        
+        Some(repo_file)
+    }
+
     pub fn build_commit(&mut self, commit_id: u232::U232, target_folder: &Path) {
         if let Ok(repo_file) = self.get_commit(commit_id){
             let repo_file = repo_file.clone();
@@ -116,12 +322,13 @@ impl StorageRepo {
             if let RepoFileType::Folder(_d) = repo_file.get_type(0x0F) {
                 self.build_folder(&repo_file, target_folder);
             } else {
-                self.build_file(&repo_file, target_folder);
+                let (file, data) = self.build_file(&repo_file, target_folder);
+                io::write_bytes(file.as_path(), data);
             }
         }
     }
 
-    fn build_file(&mut self, repo_file: &RepoFile, target_folder: &Path) {
+    fn build_file(&mut self, repo_file: &RepoFile, target_folder: &Path) -> (PathBuf, Vec<u8>) {
         let mut stack = Vec::<RepoFile>::new();
 
         let mut max_file_size:usize = 0;
@@ -203,7 +410,9 @@ impl StorageRepo {
 
         data = data[..cur_file_size].to_vec(); // setting the correct file size
 
-        io::write_bytes(file.as_path(), data);
+        // TODO validate the file hash
+
+        (file, data)
 
     }
 
@@ -510,7 +719,7 @@ impl Writtable for RepoFile {
         data.push(self.version);
         data.push(0x00); // Type
 
-        if let RepoFileType::Head(head) = &self.content[0] {
+        if let RepoFileType::Head(head) = self.get_type(0x00) {
             // Head
             data[1] = 0x00;
             data.append(&mut head.to_bytes());
@@ -520,43 +729,38 @@ impl Writtable for RepoFile {
         // Previous Commit
         data.append(&mut self.previous_commit.to_be_bytes().to_vec());
 
-        if let RepoFileType::BranchHead = self.content[0] {
+        if let RepoFileType::BranchHead = self.get_type(0x01) {
             // Branch Head
             data[1] = 0x01;
             return data;
         }
 
-        let mut offset = 0;
-        if let RepoFileType::CommitInfo(info) = &self.content[0] {
+        if let RepoFileType::CommitInfo(info) = &self.get_type(0x10) {
             // Commit Info, mixes with all remaining types
             data[1] = 0x10;
             data.append(&mut info.to_bytes());
-
-            offset = 1;
         }
 
-        if let RepoFileType::Delete = self.content[offset] {
+        if let RepoFileType::Delete = self.get_type(0x05) {
             //Delete
             data[1] = data[1] + 0x05;
             return data;
         }
 
         // Handles the different new instructions
-        if let RepoFileType::NewFile = self.content[offset] {
+        if let RepoFileType::NewFile = self.get_type(0x03) {
             // Branch Head
             data[1] = data[1] + 0x03;
-            offset = offset + 1;
-        } else if let RepoFileType::NewFolder(name) = &self.content[offset] {
+        } else if let RepoFileType::NewFolder(name) = &self.get_type(0x0D) {
             // New Folder
             data[1] = data[1] + 0x0D;
             data.append(&mut name.as_bytes().to_vec());
             data.push(0x00);
-            offset = offset + 1;
         }
 
-        if let RepoFileType::Folder(files) = &self.content[offset] {
+        if let RepoFileType::Folder(files) = &self.get_type(0x0F) {
             // Folder
-            if let RepoFileType::NewFolder(_name) = &self.content[offset - 1] {
+            if let RepoFileType::NewFolder(_name) = &self.get_type(0x0D) {
             } else {
                 data[1] = data[1] + 0x0F;
             }
@@ -569,36 +773,29 @@ impl Writtable for RepoFile {
         }
 
         // Mixable Instructions
-        let mut index = 0;
-        if let RepoFileType::Resize(size) = &self.content[offset + index] {
+        if let RepoFileType::Resize(size) = &self.get_type(0x08) {
             // Resize
-            if let RepoFileType::NewFile = self.content[offset - 1] {
-            } else {
+            if let RepoFileType::None = self.get_type(0x03) {
                 data[1] = data[1] + 0x08;
             }
 
             data.append(&mut io::value_to_utf8_bytes(size.clone()).to_vec());
-
-            index = index + 1;
         }
 
-        if let RepoFileType::Rename(name) = &self.content[offset + index] {
-            // Resize
-            if let RepoFileType::NewFile = self.content[offset - 1] {
-            } else {
+        if let RepoFileType::Rename(name) = &self.get_type(0x04) {
+            // Rename
+            if let RepoFileType::None = self.get_type(0x03) {
                 data[1] = data[1] + 0x04;
             }
 
             data.append(&mut name.as_bytes().to_vec());
             data.push(0x00);
-
-            index = index + 1;
         }
 
-        if let RepoFileType::Edit(instructions, pointer_size) = &self.content[offset + index] {
-            // Resize
-            if let RepoFileType::NewFile = self.content[offset - 1] {
-            } else {
+        let edit = self.get_type(0x02);
+        if let RepoFileType::Edit(instructions, pointer_size) = edit {
+            // Edit
+            if let RepoFileType::None = self.get_type(0x03) {
                 data[1] = data[1] + 0x02;
             }
 
@@ -606,10 +803,9 @@ impl Writtable for RepoFile {
             while let Some(int) = iter.next() {
                 data.append(&mut int.to_bytes(pointer_size.clone()));
             }
-        } else if let RepoFileType::EditNotProcessed(dat) = &self.content[offset + index] {
-            // Resize, but the instructions never got parsed
-            if let RepoFileType::NewFile = self.content[offset - 1] {
-            } else {
+        } else if let RepoFileType::EditNotProcessed(dat) = edit {
+            // Edit, but the instructions never got parsed
+            if let RepoFileType::None = self.get_type(0x03) {
                 data[1] = data[1] + 0x02;
             }
 
