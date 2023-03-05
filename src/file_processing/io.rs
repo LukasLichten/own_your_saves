@@ -1,6 +1,7 @@
+use std::path::PathBuf;
 use std::{io, path::Path};
 use std::io::prelude::*;
-use std::fs::File;
+use std::fs::{File, self};
 use sha3::Digest;
 use super::u232;
 
@@ -51,7 +52,26 @@ pub fn write_bytes(file_name: &Path, list_of_bytes: Vec<u8>) -> io::Result<()> {
 }
 
 pub fn create_folder(folder_path: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(folder_path)
+    fs::create_dir_all(folder_path)
+}
+
+pub fn get_folder_content(folder_path: &Path) -> Vec<PathBuf> {
+    let mut list = Vec::<PathBuf>::new();
+
+    if folder_path.exists() {
+        let res = fs::read_dir(folder_path);
+        if let Ok(dir_read) = res {
+            for item in dir_read {
+                if let Ok(entry) = item {
+                    list.push(entry.path());
+                }
+            }
+
+        }
+    }
+
+
+    list
 }
 
 pub fn hash_data(list_of_bytes: &[u8]) -> u232::U232{

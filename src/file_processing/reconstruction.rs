@@ -28,6 +28,45 @@ pub fn read_storage_info(folder: &Path) -> std::io::Result<StorageRepo>{
     ))
 }
 
+pub fn new_repo(folder: &Path, name: String) -> std::io::Result<StorageRepo> {
+    if folder.exists() {
+        if !io::get_folder_content(folder).is_empty() {
+            // Creating a repo in a folder that already exists is not intended
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "Directory needs to be empty"
+            ));
+        }
+    }
+    
+    if let Err(e) = io::create_folder(folder) {
+        return Err(e);
+    }
+
+    let head = Head {
+        name,
+        branches: Vec::<String>::new()
+    };
+
+    let header_repo_file = RepoFile {
+        version: 0,
+        name: "HEADER".to_string(),
+        content: vec![RepoFileType::Head(head); 1],
+        repo_file_hash: u232::new(),
+        previous_commit: u232::new()
+    };
+
+    header_repo_file.write_file_back(folder);
+
+    Ok(StorageRepo {
+        folder: folder.to_str().unwrap().to_string(),
+        header: header_repo_file,
+        branches: Vec::<RepoFile>::new(),
+        commits: HashMap::<u232::U232, RepoFile>::new()
+    })
+
+}
+
 pub struct StorageRepo {
     folder: String,
     header: RepoFile,
@@ -93,6 +132,33 @@ impl StorageRepo {
         self.commits.insert(u232::from_u8arr(io::hex_string_to_bytes(&commit.name).as_slice()), commit);
     }
 
+    // TODO assess if this is okay, afterall it may stand in our way to figure out what was deleted in a commit
+    fn get_free_commit_id_for_delete(&mut self, hash: &u232::U232) -> u232::U232 {
+        let mut hash = hash.clone();
+        let mut party_byte = 0;
+        while let Ok(conflict) = self.get_commit(hash) {
+            if let RepoFileType::Delete = conflict.get_type(0x05) {
+                break; // We can reuse existing deletes
+            }
+
+            party_byte = party_byte + 1; // Potential for panic through overflow
+            hash.set_inequailty_byte(party_byte);
+        }
+
+        hash
+    }
+
+    fn get_free_commit_id(&mut self, hash: &u232::U232) -> u232::U232 {
+        let mut hash = hash.clone();
+        let mut party_byte = 0;
+        while let Ok(_conflict) = self.get_commit(hash) {
+            party_byte = party_byte + 1; // Potential for panic through overflow
+            hash.set_inequailty_byte(party_byte);
+        }
+
+        hash
+    }
+
     fn get_branches(&mut self, header_info: &Head) {
         self.branches = Vec::<RepoFile>::new(); // Emptying, before adding new ones
 
@@ -109,22 +175,122 @@ impl StorageRepo {
         }
     }
 
-    pub fn create_commit(&mut self, prev_commit_id: u232::U232, location: &Path, branch_name: String) {
-        if let Ok(repo_file) = self.get_commit(prev_commit_id){
-            let repo_file = repo_file.clone();
-            if let RepoFileType::Folder(files) = repo_file.get_type(0x0F) {
+    pub fn push_commit_onto_branch(&mut self, repo_file: &RepoFile, branch_name: String) -> bool {
+        // Updating the files
+        self.update_header_and_branches();
+        let folder = PathBuf::from(&self.folder);
 
+        // Finding the branch
+        let mut index = 0;
+        let mut branch = &self.header; // Potential that there are no branches, so we load the header file to not get a out of bounds
+        while index < self.branches.len() {
+            branch = &self.branches[index];
+            if branch.name == branch_name {
+                break;
             }
-
-            self.create_file_commit(Some(&repo_file), location);
+            index = index + 1;
         }
 
+        if branch.name != branch_name {
+            // No branch with this name, creating one
+            if let RepoFileType::Head(header) = self.header.get_type(0x00) {
+                let mut header = header.clone();
+                header.branches.push(branch_name.clone());
+                
+                // Create branch file
+                let branch = RepoFile {
+                    version: 0,
+                    name: branch_name.clone(),
+                    content: vec![RepoFileType::BranchHead;1],
+                    previous_commit: u232::from_u8arr(io::hex_string_to_bytes(&repo_file.name).as_slice()),
+                    repo_file_hash: u232::new()
+                };
+                branch.write_file_back(folder.as_path());
 
+                // Updating Header file
+                self.header.content[0] = RepoFileType::Head(header);
+                self.header.write_file_back(folder.as_path());
+
+                // Updating cache
+                self.update_header_and_branches();
+                return true;
+            } else {
+                // The Header file does not have a header info? This should not happen
+                panic!("Header file does not have header information");
+            }
+        }
+
+        // Checking if the branch has been updated since
+        if repo_file.previous_commit != branch.previous_commit {
+            // There is a conflict
+            return false;
+        }
+
+        // Updating the branch
+        let mut branch = branch.clone();
+        branch.previous_commit = u232::from_u8arr(io::hex_string_to_bytes(&repo_file.name).as_slice());
+        branch.write_file_back(folder.as_path());
+
+        // Update the information again
+        self.update_header_and_branches();
+
+        true
+    }
+
+    pub fn create_commit(&mut self, prev_commit_id: u232::U232, location: &Path) -> Option<RepoFile> {
+        if !location.exists() {
+            if prev_commit_id == u232::new() {
+                // Nothing to commit, exiting
+                return None;
+            } else {
+                // Deleting what existed
+                let repo = RepoFile {
+                    version: 0,
+                    content: vec![RepoFileType::Delete; 1],
+                    name: io::bytes_to_hex_string(self.get_free_commit_id_for_delete(&prev_commit_id).to_be_bytes()),
+                    previous_commit: prev_commit_id,
+                    repo_file_hash: u232::new()
+                };
+
+                self.insert_commit(repo.clone());
+
+                return Some(repo);
+            }
+        }
+
+        if let Ok(repo_file) = self.get_commit(prev_commit_id){
+            let repo_file = repo_file.clone();
+            if let RepoFileType::Folder(_files) = repo_file.get_type(0x0F) {
+                if location.is_dir() {
+                    return self.create_folder_commit(Some(&repo_file), location);
+                } else {
+                    //
+                }
+            } else {
+                return self.create_file_commit(Some(&repo_file), location);
+            }
+        } else {
+            // No previous commit
+            if location.is_dir() {
+                return self.create_folder_commit(None, location);
+            } else if location.is_file() {
+                return self.create_file_commit(None, location);
+            }
+        }
+
+        None
+    }
+
+    fn create_folder_commit(&mut self, prev_commit: Option<&RepoFile>, location: &Path) -> Option<RepoFile> {
+        None
     }
 
     fn create_file_commit(&mut self, prev_commit: Option<&RepoFile>, location: &Path) -> Option<RepoFile> {
-        let (new_data, mut old_data, new_hash, rename, prev_com_id) =
-            if let Some(prev) = prev_commit {
+        let (new_data,
+            mut old_data,
+            new_hash,
+            rename,
+            prev_com_id) = if let Some(prev) = prev_commit {
             
             if let Ok(new_data) = io::read_bytes(location) {
                 let new_hash = io::hash_data(new_data.as_slice());
@@ -161,7 +327,7 @@ impl StorageRepo {
         };
         
         let mut repo_file = RepoFile {
-            name: new_hash.to_string(),
+            name: io::bytes_to_hex_string(self.get_free_commit_id(&new_hash).to_be_bytes()),
             version: 0, // Current version
             previous_commit: prev_com_id,
             content: Vec::<RepoFileType>::new(),
@@ -297,6 +463,7 @@ impl StorageRepo {
             };
 
             // we test the instructions to see if we get the correct result in the end
+            println!("{}", old_data.len());
             ins.run_instruction(&mut old_data);
 
             instructions.push(ins);
@@ -895,6 +1062,7 @@ impl Instruction {
             self.pointer
         };
 
+        println!("{}: {}", self.pointer, self.num_bytes);
 
         if let Operation::Replace(bytes) = &self.operation {
             let mut index = 0;

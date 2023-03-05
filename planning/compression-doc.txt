@@ -4,6 +4,7 @@ Name:
 29 bytes in hex, last 28 bytes is SHA3-224 hash of the resulting file, 
 # Except Header (Named HEADER), and Branch Header (Named after the Branch)
 # In case of a folder we append all the file hashes, and then hash it again
+# As Delete does not have a resulting file, we reuse the existing Hash, but with a different inequality byte
 
 Content:
 ---------------------
