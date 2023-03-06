@@ -16,7 +16,7 @@ pub fn read_storage_info(folder: &Path) -> std::io::Result<StorageRepo>{
                 commits: HashMap::<u232::U232, RepoFile>::new()
             };
 
-            repo.get_branches(&head_info);
+            repo.read_branches(&head_info);
 
             return Ok(repo);
         }
@@ -82,7 +82,7 @@ impl StorageRepo {
             // Header was changed, possibly a new branch, so remove all branches and re-add them
             if let RepoFileType::Head(head_info) = &self.header.get_type(0x00) {
                 let head_info = head_info.clone();
-                self.get_branches(&head_info);
+                self.read_branches(&head_info);
             } else {
                 // I don't like panics, but wtf am I supposed to do if this happens... It shouldn't, but what if it does?
                 panic!("The header file of a repository at {} lost it's header information on a reload", self.folder);
@@ -129,10 +129,13 @@ impl StorageRepo {
     }
 
     pub fn insert_commit(&mut self, commit: RepoFile) {
+        let folder = PathBuf::from(&self.folder);
+        commit.write_file_back(folder.as_path());
         self.commits.insert(u232::from_u8arr(io::hex_string_to_bytes(&commit.name).as_slice()), commit);
     }
 
     // TODO assess if this is okay, afterall it may stand in our way to figure out what was deleted in a commit
+    // TODO Saw bug with incorrect ID being attached to branch, has to be tested
     fn get_free_commit_id_for_delete(&mut self, hash: &u232::U232) -> u232::U232 {
         let mut hash = hash.clone();
         let mut party_byte = 0;
@@ -159,7 +162,7 @@ impl StorageRepo {
         hash
     }
 
-    fn get_branches(&mut self, header_info: &Head) {
+    fn read_branches(&mut self, header_info: &Head) {
         self.branches = Vec::<RepoFile>::new(); // Emptying, before adding new ones
 
         let mut iter = header_info.branches.iter();
@@ -174,6 +177,56 @@ impl StorageRepo {
             }
         }
     }
+
+    pub fn get_branches(& self) -> &Vec<RepoFile> {
+        &self.branches
+    }
+
+    pub fn get_branch(&self, name: String) -> Option<&RepoFile> {
+        for branch in &self.branches {
+            if branch.name == name {
+                return Some(branch);
+            }
+        }
+
+        None
+    }
+
+    pub fn delete_branch(&mut self, name: String) -> bool {
+        
+        if let RepoFileType::Head(head) = self.header.get_type(0x00) {
+            let mut head = head.clone();
+            let mut index = 0;
+
+            while index < head.branches.len() {
+                if head.branches[index] == name {
+                    break;
+                }
+
+                index = index + 1;
+            }
+
+            if index == head.branches.len() { // Not found
+                return false;
+            } else {
+                head.branches.remove(index);
+            }
+
+            // Update head
+            self.header.content[0] = RepoFileType::Head(head);
+            self.header.write_file_back(PathBuf::from(&self.folder).as_path());
+
+            // Refreshing
+            self.update_header_and_branches();
+            return true;
+        }
+
+        false
+    }
+
+    // pub fn get_folder(& self) -> &String {
+    //     &self.folder
+    // }
 
     pub fn push_commit_onto_branch(&mut self, repo_file: &RepoFile, branch_name: String) -> bool {
         // Updating the files
@@ -463,12 +516,11 @@ impl StorageRepo {
             };
 
             // we test the instructions to see if we get the correct result in the end
-            println!("{}", old_data.len());
             ins.run_instruction(&mut old_data);
 
             instructions.push(ins);
 
-            index = index + add_index - 1;
+            index = index + add_index; //- 1;
         }
 
         // Check of the instructions:
@@ -477,6 +529,8 @@ impl StorageRepo {
         }
         
         repo_file.content.push(RepoFileType::Edit(instructions, pointer_size));
+
+        self.insert_commit(repo_file.clone());
 
         
         Some(repo_file)
@@ -503,7 +557,7 @@ impl StorageRepo {
         let mut file_name = String::new();
 
         let mut temp = repo_file.clone();
-        while let RepoFileType::None = temp.get_type(0x03) { // New File, aka it returns None if it is not contained, therefore let us continue iterating
+        loop { // Do-while
             // Let us also check for the largest file size, needed for defining the size of our build file
             if let RepoFileType::Resize(size) = temp.get_type(0x08) {
                 let size = size.clone().try_into().unwrap();
@@ -524,7 +578,10 @@ impl StorageRepo {
             }
 
             // The iteration part
-            if let Ok(t) = self.get_commit(temp.previous_commit) {
+            if let RepoFileType::NewFile = temp.get_type(0x03) { // We exit once we read in all instruction up to a New File
+                stack.push(temp);
+                break;
+            } else if let Ok(t) = self.get_commit(temp.previous_commit) {
                 stack.push(temp);
                 temp = t.clone();
             } else {
@@ -704,10 +761,20 @@ impl RepoFile {
                 self.content = other.content;
                 self.previous_commit = other.previous_commit;
                 self.repo_file_hash = other.repo_file_hash;
+
+                return true;
             }
         }
 
         return false;
+    }
+
+    pub fn get_name(& self) -> &String {
+        &self.name
+    }
+
+    pub fn get_previous_commit(& self) -> u232::U232 {
+        self.previous_commit
     }
 
     pub fn write_file_back(& self, folder: &Path) -> WritingStates{
@@ -716,7 +783,8 @@ impl RepoFile {
 
         // We check if anything changed
         let data = self.to_bytes();
-        if self.repo_file_hash == io::hash_data(data.as_slice()) {
+        let new_hash = io::hash_data(data.as_slice());
+        if self.repo_file_hash == new_hash {
             return WritingStates::NotNecessary;
         }
 
@@ -725,8 +793,13 @@ impl RepoFile {
             let res = io::read_bytes(file.as_path());
             if let Ok(file_data) = res {
                 let hash = io::hash_data(file_data.as_slice());
-    
-                if hash != self.repo_file_hash {
+                
+                if new_hash == hash {
+                    // In case we have written the file already, but not updated since
+                    return WritingStates::NotNecessary;
+                }
+
+                if hash != self.repo_file_hash { 
                     // File has been updated since last pull
                     return WritingStates::Conflict(data);
                 }
@@ -747,7 +820,8 @@ impl RepoFile {
             return WritingStates::Err(e);
         }
 
-
+        // There is one weakness: We have not updated the self.repo_file_hash, which would require us to borrow mut
+        // Consequence: A reread will reread the file, even though nothing has changed (which should not have any performance impact, as io has to happen anyway)
         WritingStates::Ok
     }
 
@@ -763,11 +837,11 @@ impl RepoFile {
 
             // Parsing the individual instructions
             while offset < data.len() {
-                let pointer = io::u64_to_usize(io::get_u64(io::save_cut(io::save_slice(data, offset), pointer_size)));
-                offset = offset + pointer_size;
-
                 let typ = data[offset];
                 offset = offset + 1;
+
+                let pointer = io::u64_to_usize(io::get_u64(io::save_cut(io::save_slice(data, offset), pointer_size)));
+                offset = offset + pointer_size;
 
                 let (area, num_bytes) = io::get_utf8_value(io::save_slice(data, offset));
                 offset = offset + num_bytes;
@@ -968,7 +1042,8 @@ impl Writtable for RepoFile {
 
             let mut iter = instructions.iter();
             while let Some(int) = iter.next() {
-                data.append(&mut int.to_bytes(pointer_size.clone()));
+                let mut store = int.to_bytes(pointer_size.clone());
+                data.append(&mut store);
             }
         } else if let RepoFileType::EditNotProcessed(dat) = edit {
             // Edit, but the instructions never got parsed
@@ -989,6 +1064,8 @@ impl Writtable for Head {
 
         data.append(&mut self.name.as_bytes().to_vec());
         data.push(0x00_u8);
+
+        data.append(&mut io::value_to_utf8_bytes(self.branches.len().try_into().unwrap()));
 
         let mut iter = self.branches.iter();
         while let Some(val) = iter.next() {
@@ -1059,10 +1136,8 @@ impl Instruction {
         let num_bytes = if self.pointer + self.num_bytes > data.len() {
             data.len() - self.pointer
         } else {
-            self.pointer
+            self.num_bytes
         };
-
-        println!("{}: {}", self.pointer, self.num_bytes);
 
         if let Operation::Replace(bytes) = &self.operation {
             let mut index = 0;
@@ -1150,7 +1225,7 @@ pub fn decode_repo_file(data: Vec<u8>, file_name: String) -> RepoFile {
         };
 
         let mut index = 0;
-        while index < num_branches && offset >= data.len() {
+        while index < num_branches && offset < data.len() {
             let (bra_name, num_bytes) = io::read_string_sequence(io::save_slice(&data, offset));
             offset = offset + num_bytes;
 

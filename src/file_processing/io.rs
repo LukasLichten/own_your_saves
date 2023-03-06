@@ -145,7 +145,7 @@ pub fn get_utf8_value (data: &[u8]) -> (u64, usize) {
         6 => 0b1111_1100u8,
         7 => 0b1111_1110u8,
         8 => 0b1111_1111u8,
-        _ => 0u8
+        _ => 1u8 // prevent 0 division
     };
 
     
@@ -338,7 +338,7 @@ pub fn save_slice(data: &[u8], offset: usize) -> &[u8] {
 
 pub fn save_cut(data: &[u8], size: usize) -> &[u8] {
     let mut size = size;
-    if size < data.len() {
+    if size > data.len() {
         size = data.len();
     }
 
