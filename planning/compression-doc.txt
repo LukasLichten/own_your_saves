@@ -212,7 +212,9 @@ Commiting User - 4 bytes
 # User Data is stored centraliced
 # 4 billion user IDs should be enough for now
 # Increasing this in the future is none issue, as long as your user ID database still outputs the same 32bit user ID for the old users, which it should automatically
-# Also IDs the device/application
+
+Device ID - 1 byte
+# Each user can have 256 devices
 
 Text - utf-8 char sequence
 # If a single NUL, then there is no commit message

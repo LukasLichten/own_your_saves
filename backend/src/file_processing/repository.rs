@@ -707,6 +707,7 @@ pub struct Head {
 #[derive(Clone)]
 pub struct CommitInfo {
     user_id: u32,
+    device_id: u8,
     text: String,
     timestamp: u64 //inital commit is unix time in s, after that this will be relative to the previous commit
 }
@@ -1082,6 +1083,7 @@ impl Writtable for CommitInfo {
         let mut data = Vec::<u8>::new();
 
         data.append(&mut self.user_id.to_be_bytes().to_vec());
+        data.push(self.device_id);
 
         data.append(&mut self.text.as_bytes().to_vec());
         data.push(0x00);
@@ -1253,6 +1255,8 @@ pub fn decode_repo_file(data: Vec<u8>, file_name: String) -> RepoFile {
         //Commit Info
         let user_id = io::get_u32(io::save_slice(&data, offset));
         offset = offset + 4;
+        let device_id = if offset < data.len() { data[offset] } else {0_u8};
+        offset = offset + 1;
         let (text, num_bytes) = io::read_string_sequence(io::save_slice(&data, offset));
         offset = offset + num_bytes;
         let (timestamp, num_bytes) = io::get_utf8_value(io::save_slice(&data, offset));
@@ -1260,6 +1264,7 @@ pub fn decode_repo_file(data: Vec<u8>, file_name: String) -> RepoFile {
 
         repo_file.content.push(RepoFileType::CommitInfo(CommitInfo {
             user_id,
+            device_id,
             text,
             timestamp
         }));
