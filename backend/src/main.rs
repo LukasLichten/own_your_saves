@@ -1,27 +1,35 @@
 pub mod file_processing;
 pub mod api;
+pub mod database;
 
-use api::task::{
-    get_task, get_ping
-};
+use api::task;
 
 use actix_web::{HttpServer, App, web::{Data, scope}, middleware::Logger};
 use actix_web_lab::web::spa;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+
     std::env::set_var("RUST_LOG", "debug");
     std::env::set_var("RUST_BACKTRACE", "1");
+    
     env_logger::init();
 
     HttpServer::new(move || {
         let logger = Logger::default();
+        let database = database::init_sql();
+        let data = Data::new(database);
+
+
         App::new()
         .wrap(logger)
+        .app_data(data)
         .service(
             scope("/api")
-                .service(get_task)
-                .service(get_ping)
+                .service(task::get_task)
+                .service(task::get_ping)
+                .service(task::post_new_user)
+                .service(task::get_all_user)
         )
         //Production
         .service(
@@ -37,6 +45,7 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
+
 
 
 

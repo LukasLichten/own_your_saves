@@ -3,7 +3,7 @@ use std::{io, path::Path};
 use std::io::prelude::*;
 use std::fs::{File, self};
 use sha3::Digest;
-use super::u232;
+use common::{U232,LargeU};
 
 // If this is compiled in 32bit then we would be restricted to 2gb files
 pub fn read_bytes(file_name: &Path) -> io::Result<Vec<u8>> {
@@ -74,17 +74,17 @@ pub fn get_folder_content(folder_path: &Path) -> Vec<PathBuf> {
     list
 }
 
-pub fn hash_data(list_of_bytes: &[u8]) -> u232::U232{
+pub fn hash_data(list_of_bytes: &[u8]) -> U232{
     let mut hasher = sha3::Sha3_224::new(); // Sha3_256::new();
 
     hasher.update(list_of_bytes);
     
     let res = hasher.finalize();
     
-    u232::from_u8arr(res.as_slice())
+    U232::from_u8arr(res.as_slice())
 }
 
-pub fn hash_file(file_name: &Path) -> io::Result<u232::U232> {
+pub fn hash_file(file_name: &Path) -> io::Result<U232> {
     let res = read_bytes(file_name);
 
     if let Ok(bytes) = res {
@@ -230,86 +230,7 @@ pub fn value_to_utf8_bytes(number: u64) -> Vec<u8> {
     data
 }
 
-pub fn bytes_to_hex_string(data: &[u8]) -> String {
-    fn convert(val: u8) -> char {
-        match val {
-            0x0 => '0',
-            0x1 => '1',
-            0x2 => '2',
-            0x3 => '3',
-            0x4 => '4',
-            0x5 => '5',
-            0x6 => '6',
-            0x7 => '7',
-            0x8 => '8',
-            0x9 => '9',
-            0xA => 'A',
-            0xB => 'B',
-            0xC => 'C',
-            0xD => 'D',
-            0xE => 'E',
-            0xF => 'F',
-            _ => ' '
-        }
-    }
 
-    let mut out = String::new();
-
-    let mut iter = data.iter();
-    while let Some(byte) = iter.next() {
-        let lower = byte.clone().wrapping_shl(4).wrapping_shr(4); //Shifting to truncate the lower data
-        let upper = byte.clone().wrapping_shr(4); //Just needs to shift right
-
-        out.push(convert(upper));
-        out.push(convert(lower));
-    }
-
-    out
-}
-
-pub fn hex_string_to_bytes(text: &String) -> Vec<u8> {
-    fn convert(val: char) -> u8 {
-        match val {
-            '0' => 0x0,
-            '1' => 0x1,
-            '2' => 0x2,
-            '3' => 0x3,
-            '4' => 0x4,
-            '5' => 0x5,
-            '6' => 0x6,
-            '7' => 0x7,
-            '8' => 0x8,
-            '9' => 0x9,
-            'A' => 0xA,
-            'B' => 0xB,
-            'C' => 0xC,
-            'D' => 0xD,
-            'E' => 0xE,
-            'F' => 0xF,
-            _ => 0
-        }
-    }
-
-    let mut out = Vec::<u8>::new();
-
-    let text = text.to_ascii_uppercase(); //deals with the potential of lower case characters
-
-    let mut iter = text.chars().into_iter();
-    let mut temp = Option::<u8>::None;
-    while let Some(ch) = iter.next() {
-        let val = convert(ch);
-
-        if let Some(store) = temp {
-            out.push(store + val);
-            temp = Option::None;
-        } else {
-            temp = Some(val.wrapping_shl(4));
-        }
-    }
-
-
-    out
-}
 
 pub fn read_string_sequence(data: &[u8]) -> (String,usize) {
     let mut index = 0;

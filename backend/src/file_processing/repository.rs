@@ -1,5 +1,6 @@
 use std::{path::{Path, PathBuf}, collections::HashMap};
-use super::{io,u232};
+use super::io;
+use common::{U232,LargeU};
 
 pub fn read_storage_info(folder: &Path) -> std::io::Result<StorageRepo>{
     let mut file = PathBuf::from(folder.as_os_str());
@@ -13,7 +14,7 @@ pub fn read_storage_info(folder: &Path) -> std::io::Result<StorageRepo>{
                 folder: folder.as_os_str().to_str().unwrap().to_string(),
                 header:head_file,
                 branches: Vec::<RepoFile>::new(),
-                commits: HashMap::<u232::U232, RepoFile>::new()
+                commits: HashMap::<U232, RepoFile>::new()
             };
 
             repo.read_branches(&head_info);
@@ -52,8 +53,8 @@ pub fn new_repo(folder: &Path, name: String) -> std::io::Result<StorageRepo> {
         version: 0,
         name: "HEADER".to_string(),
         content: vec![RepoFileType::Head(head); 1],
-        repo_file_hash: u232::new(),
-        previous_commit: u232::new()
+        repo_file_hash: U232::new(),
+        previous_commit: U232::new()
     };
 
     header_repo_file.write_file_back(folder);
@@ -62,7 +63,7 @@ pub fn new_repo(folder: &Path, name: String) -> std::io::Result<StorageRepo> {
         folder: folder.to_str().unwrap().to_string(),
         header: header_repo_file,
         branches: Vec::<RepoFile>::new(),
-        commits: HashMap::<u232::U232, RepoFile>::new()
+        commits: HashMap::<U232, RepoFile>::new()
     })
 
 }
@@ -71,7 +72,7 @@ pub struct StorageRepo {
     folder: String,
     header: RepoFile,
     branches: Vec<RepoFile>,
-    commits: HashMap<u232::U232, RepoFile>
+    commits: HashMap<U232, RepoFile>
 }
 
 impl StorageRepo {
@@ -96,7 +97,7 @@ impl StorageRepo {
         }
     }
 
-    pub fn get_commit(&mut self, id: u232::U232) -> std::io::Result<&RepoFile> {
+    pub fn get_commit(&mut self, id: U232) -> std::io::Result<&RepoFile> {
         let mut file = PathBuf::from(&self.folder);
 
         if self.commits.contains_key(&id) {
@@ -111,7 +112,7 @@ impl StorageRepo {
             return Ok(&self.commits[&id]);
         }
 
-        file.push(io::bytes_to_hex_string(id.to_be_bytes()));
+        file.push(common::bytes_to_hex_string(id.to_be_bytes()));
 
         let res = read_repo_file(file.as_path());
         if let Ok(commit) = res {
@@ -131,12 +132,12 @@ impl StorageRepo {
     pub fn insert_commit(&mut self, commit: RepoFile) {
         let folder = PathBuf::from(&self.folder);
         commit.write_file_back(folder.as_path());
-        self.commits.insert(u232::from_u8arr(io::hex_string_to_bytes(&commit.name).as_slice()), commit);
+        self.commits.insert(U232::from_u8arr(common::hex_string_to_bytes(&commit.name).as_slice()), commit);
     }
 
     // TODO assess if this is okay, afterall it may stand in our way to figure out what was deleted in a commit
     // TODO Saw bug with incorrect ID being attached to branch, has to be tested
-    fn get_free_commit_id_for_delete(&mut self, hash: &u232::U232) -> u232::U232 {
+    fn get_free_commit_id_for_delete(&mut self, hash: &U232) -> U232 {
         let mut hash = hash.clone();
         let mut party_byte = 0;
         while let Ok(conflict) = self.get_commit(hash) {
@@ -151,7 +152,7 @@ impl StorageRepo {
         hash
     }
 
-    fn get_free_commit_id(&mut self, hash: &u232::U232) -> u232::U232 {
+    fn get_free_commit_id(&mut self, hash: &U232) -> U232 {
         let mut hash = hash.clone();
         let mut party_byte = 0;
         while let Ok(_conflict) = self.get_commit(hash) {
@@ -255,8 +256,8 @@ impl StorageRepo {
                     version: 0,
                     name: branch_name.clone(),
                     content: vec![RepoFileType::BranchHead;1],
-                    previous_commit: u232::from_u8arr(io::hex_string_to_bytes(&repo_file.name).as_slice()),
-                    repo_file_hash: u232::new()
+                    previous_commit: U232::from_u8arr(common::hex_string_to_bytes(&repo_file.name).as_slice()),
+                    repo_file_hash: U232::new()
                 };
                 branch.write_file_back(folder.as_path());
 
@@ -281,7 +282,7 @@ impl StorageRepo {
 
         // Updating the branch
         let mut branch = branch.clone();
-        branch.previous_commit = u232::from_u8arr(io::hex_string_to_bytes(&repo_file.name).as_slice());
+        branch.previous_commit = U232::from_u8arr(common::hex_string_to_bytes(&repo_file.name).as_slice());
         branch.write_file_back(folder.as_path());
 
         // Update the information again
@@ -290,9 +291,9 @@ impl StorageRepo {
         true
     }
 
-    pub fn create_commit(&mut self, prev_commit_id: u232::U232, location: &Path) -> Option<RepoFile> {
+    pub fn create_commit(&mut self, prev_commit_id: U232, location: &Path) -> Option<RepoFile> {
         if !location.exists() {
-            if prev_commit_id == u232::new() {
+            if prev_commit_id == U232::new() {
                 // Nothing to commit, exiting
                 return None;
             } else {
@@ -300,9 +301,9 @@ impl StorageRepo {
                 let repo = RepoFile {
                     version: 0,
                     content: vec![RepoFileType::Delete; 1],
-                    name: io::bytes_to_hex_string(self.get_free_commit_id_for_delete(&prev_commit_id).to_be_bytes()),
+                    name: common::bytes_to_hex_string(self.get_free_commit_id_for_delete(&prev_commit_id).to_be_bytes()),
                     previous_commit: prev_commit_id,
-                    repo_file_hash: u232::new()
+                    repo_file_hash: U232::new()
                 };
 
                 self.insert_commit(repo.clone());
@@ -347,7 +348,7 @@ impl StorageRepo {
             
             if let Ok(new_data) = io::read_bytes(location) {
                 let new_hash = io::hash_data(new_data.as_slice());
-                let old_id = u232::from_u8arr(io::hex_string_to_bytes(&prev.name).as_slice());
+                let old_id = U232::from_u8arr(common::hex_string_to_bytes(&prev.name).as_slice());
 
                 if new_hash == old_id {
                     // no changes in the file, return the Prev commit
@@ -372,7 +373,7 @@ impl StorageRepo {
             if let Ok(new_data) = io::read_bytes(location) {
                 let new_hash = io::hash_data(new_data.as_slice());
 
-                (new_data, vec![0_u8;0], new_hash, Some(location.file_name()), u232::new())
+                (new_data, vec![0_u8;0], new_hash, Some(location.file_name()), U232::new())
             } else {
                 //TODO handling this case properly
                 return None;
@@ -380,15 +381,15 @@ impl StorageRepo {
         };
         
         let mut repo_file = RepoFile {
-            name: io::bytes_to_hex_string(self.get_free_commit_id(&new_hash).to_be_bytes()),
+            name: common::bytes_to_hex_string(self.get_free_commit_id(&new_hash).to_be_bytes()),
             version: 0, // Current version
             previous_commit: prev_com_id,
             content: Vec::<RepoFileType>::new(),
-            repo_file_hash: u232::new(),
+            repo_file_hash: U232::new(),
         };
 
         // New File
-        if repo_file.previous_commit == u232::new() {
+        if repo_file.previous_commit == U232::new() {
             repo_file.content.push(RepoFileType::NewFile);
         }
 
@@ -536,7 +537,7 @@ impl StorageRepo {
         Some(repo_file)
     }
 
-    pub fn build_commit(&mut self, commit_id: u232::U232, target_folder: &Path) {
+    pub fn build_commit(&mut self, commit_id: U232, target_folder: &Path) {
         if let Ok(repo_file) = self.get_commit(commit_id){
             let repo_file = repo_file.clone();
 
@@ -678,8 +679,8 @@ pub struct RepoFile {
     version: u8,
     name: String,
     content: Vec<RepoFileType>,
-    previous_commit: u232::U232, //0 if not oplicable, or this is the first commit
-    repo_file_hash: u232::U232,
+    previous_commit: U232, //0 if not oplicable, or this is the first commit
+    repo_file_hash: U232,
 }
 
 #[derive(Clone)]
@@ -693,7 +694,7 @@ pub enum RepoFileType {
     Delete,
     Rename(String),
     NewFolder(String),
-    Folder(Vec<u232::U232>),
+    Folder(Vec<U232>),
     CommitInfo(CommitInfo),
     None
 }
@@ -774,7 +775,7 @@ impl RepoFile {
         &self.name
     }
 
-    pub fn get_previous_commit(& self) -> u232::U232 {
+    pub fn get_previous_commit(& self) -> U232 {
         self.previous_commit
     }
 
@@ -934,7 +935,7 @@ impl RepoFile {
     }
 
     // Returns the pointer size, or the previous commit which may contain it
-    pub fn get_pointer_size(& self) -> Result<usize,u232::U232> {
+    pub fn get_pointer_size(& self) -> Result<usize, U232> {
         if let RepoFileType::Resize(val) = self.get_type(0x08) {
             let bits = val.ilog2(); // technically this is one bit short
             let bytes = bits / 8 + 1; // but this means it handles the rounding
@@ -1206,7 +1207,7 @@ pub fn decode_repo_file(data: Vec<u8>, file_name: String) -> RepoFile {
         version: data[0],
         name: file_name,
         content: Vec::<RepoFileType>::new(),
-        previous_commit: u232::new(),
+        previous_commit: U232::new(),
         repo_file_hash: io::hash_data(data.as_slice()),
     };
 
@@ -1242,8 +1243,8 @@ pub fn decode_repo_file(data: Vec<u8>, file_name: String) -> RepoFile {
         return repo_file; // No further data
     }
 
-    repo_file.previous_commit = u232::from_u8arr(io::save_slice(&data, offset));
-    offset = offset + u232::NUM_BYTES;
+    repo_file.previous_commit = U232::from_u8arr(io::save_slice(&data, offset));
+    offset = offset + U232::NUM_OF_BYTES;
 
     if typ == 0x01 {
         // Branch Head
@@ -1294,11 +1295,11 @@ pub fn decode_repo_file(data: Vec<u8>, file_name: String) -> RepoFile {
     }
     if typ == 0x0F {
         // Folder
-        let mut files = Vec::<u232::U232>::new();
+        let mut files = Vec::<U232>::new();
 
         while offset < data.len() {
-            files.push(u232::from_u8arr(io::save_slice(&data, offset)));
-            offset = offset + u232::NUM_BYTES;
+            files.push(U232::from_u8arr(io::save_slice(&data, offset)));
+            offset = offset + U232::NUM_OF_BYTES;
         }
         repo_file.content.push(RepoFileType::Folder(files));
 
