@@ -9,6 +9,8 @@
 //     }
 // }
 
+pub mod data;
+
 use serde::{Deserialize, Serialize};
 
 
@@ -183,26 +185,3 @@ pub fn hex_string_to_bytes(text: &String) -> Vec<u8> {
     out
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct User {
-    pub user_id: u32,
-    pub user_name: String,
-    pub password: U256
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RequestUser {
-    pub user_id: Option<u32>,
-    pub user_name: Option<String>,
-    pub password: Option<String>
-}
-
-impl RequestUser {
-    pub fn new(user_id:u32, user_name:String, password:String) -> RequestUser {
-        RequestUser {
-            user_id: Some(user_id),
-            user_name: Some(user_name),
-            password: Some(password)
-        }
-    }
-}

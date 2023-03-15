@@ -28,8 +28,10 @@ async fn main() -> std::io::Result<()> {
             scope("/api")
                 .service(task::get_task)
                 .service(task::get_ping)
-                .service(task::post_new_user)
+                .service(task::create_new_user)
                 .service(task::get_all_user)
+                .service(task::login)
+                .service(task::get_user)
         )
         //Production
         .service(
