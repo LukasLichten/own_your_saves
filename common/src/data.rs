@@ -13,7 +13,8 @@ pub trait RequestToFull<T> {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct User {
     pub user_id: u32,
-    pub user_name: String
+    pub user_name: String,
+    pub admin: bool
 }
 
 impl CastToRequest<RequestUser> for User {
@@ -21,6 +22,7 @@ impl CastToRequest<RequestUser> for User {
         RequestUser {
             user_id: Some(self.user_id),
             user_name: Some(self.user_name.clone()),
+            admin: Some(self.admin),
             password: None,
             device_id: None,
             token: None
@@ -32,6 +34,7 @@ impl CastToRequest<RequestUser> for User {
 pub struct RequestUser {
     pub user_id: Option<u32>,
     pub user_name: Option<String>,
+    pub admin: Option<bool>,
     pub password: Option<U256>,
     pub device_id: Option<u8>,
     pub token: Option<Uuid>
@@ -42,6 +45,7 @@ impl RequestUser {
         RequestUser {
             user_id: Some(user_id),
             user_name: Some(user_name),
+            admin: Some(false),
             password: Some(password),
             device_id: None,
             token: None
@@ -53,10 +57,13 @@ impl RequestToFull<User> for RequestUser {
     fn try_to_full(& self) -> Option<User> {
         if let Some(user_id) = self.user_id {
             if let Some(user_name) = &self.user_name {
+                if let Some(admin) = self.admin{
                     return Some(User {
                         user_id,
                         user_name: user_name.clone(),
+                        admin
                     });
+                }
             }
         }
         
@@ -90,7 +97,7 @@ impl RequestToFull<Device> for RequestDevice {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
 pub struct TokenCarrier {
     pub token: Uuid,
     pub device_id: Option<u8>

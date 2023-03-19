@@ -1,34 +1,12 @@
-use actix_web::{get, post, web::{Path, Data, Json}, HttpResponse, HttpRequest};
-use common::{data::{RequestUser, User, TokenCarrier, RequestDevice, Reply, Device}, LargeU, U256};
+use actix_web::{get, post, web::{Data, Json}, HttpResponse, HttpRequest};
+use common::data::{RequestUser, User, TokenCarrier, RequestDevice, Reply, Device};
 use rusqlite::Connection;
 use uuid::Uuid;
 use crate::database::{self, AuthHandle};
-use serde::{Deserialize, Serialize};
-
-#[derive(Deserialize, Serialize)]
-pub struct TaskIdentifier {
-    task_global_id: String
-}
 
 #[get("/ping")]
 pub async fn get_ping() -> Json<String> {
     Json("pong".to_string())
-}
-
-#[post("/user/create")]
-pub async fn create_new_user(data: Data<Connection>, user: Json<RequestUser>) -> Json<Reply<()>> {
-    if let Some(name) = &user.user_name {
-        if let Some(password) = user.password {
-
-            if database::create_user(&data, name.clone(), password) {
-                return Json(Reply::new(()));
-            }
-        }
-    }
-
-    
-
-    Json(Reply::Failed)
 }
 
 #[get("/user/all")]
@@ -91,12 +69,51 @@ fn handle_auth_request<T>(data: &Data<Connection>, token: Option<Uuid>) -> Resul
     //Err(Json(Reply::Failed))
 }
 
+#[post("/user/create")]
+pub async fn create_new_user(data: Data<Connection>, user: Json<RequestUser>) -> Json<Reply<()>> {
+    if let Some(name) = &user.user_name {
+        if let Some(password) = user.password {
+
+            if let Some(admin) = user.admin {
+                if admin {
+                    // This is a request for creating an admin, so we need to check if there is a logged in user, and if it is an admin
+                    let res = handle_auth_request(&data, user.token);
+                    if let Ok(handle) = res {
+                        if handle.admin {
+                            if database::create_user(&data, name.clone(), password, true) {
+                                return Json(Reply::Ok { value: (), token: handle.token }); // Normal registration does not auth the current user, this one does, therefore token update
+                            }
+                        } else {
+                            return Json(Reply::Denied { token: handle.token });
+                        }
+
+                    } else if let Err(e) = res {
+                        return e;
+                    }
+
+                    return Json(Reply::Failed);
+                }
+            }
+
+            if database::create_user(&data, name.clone(), password, false) {
+                return Json(Reply::new(()));
+            }
+        }
+    }    
+
+    Json(Reply::Failed)
+}
+
 #[post("/user/info")]
 pub async fn get_user(data: Data<Connection>, user: Json<RequestUser>) -> Json<Reply<User>> {
     let res = handle_auth_request(&data, user.token);
     if let Ok(handle) = res {
         let target_user_id = if let Some(requested) = user.user_id {
-            requested // TODO check if requesting user is an admin
+            if handle.admin {
+                requested
+            } else {
+                return Json(Reply::Denied { token: handle.token });
+            }
         } else {
             handle.user_id
         };
@@ -116,18 +133,64 @@ pub async fn get_user(data: Data<Connection>, user: Json<RequestUser>) -> Json<R
     Json(Reply::Failed)
 }
 
+#[post("/user/delete")]
+pub async fn delete_user(data: Data<Connection>, user: Json<RequestUser>) -> Json<Reply<()>> {
+    let res = handle_auth_request(&data, user.token);
+    if let Ok(handle) = res {
+        let target_user_id = if let Some(requested) = user.user_id {
+            if handle.admin {
+                requested
+            } else {
+                return Json(Reply::Denied { token: handle.token });
+            }
+        } else {
+            handle.user_id
+        };
+
+        // Checking if the requested user exists
+        let res = database::get_user(&data, target_user_id);
+        if let None = res {
+            return Json(Reply::NotFound { token: handle.token });
+        }
+
+        // Actually deleting the user
+        if database::delete_user(&data, target_user_id) {
+            return if target_user_id != handle.user_id {
+                Json(Reply::Ok { value: (), token: handle.token })
+            } else {
+                Json(Reply::Ok { value: (), token: None })
+            };
+        } else {
+            return Json(Reply::Error { token: handle.token });
+        }
+
+    } else if let Err(e) = res {
+        return e;
+    }
+    
+    Json(Reply::Failed)
+}
+
 #[post("/device/info")]
 pub async fn get_device(data: Data<Connection>, device: Json<RequestDevice>) -> Json<Reply<Device>> {
     let res = handle_auth_request(&data, device.token);
     if let Ok(handle) = res {
         let target_user_id = if let Some(requested) = device.user_id {
-            requested // TODO check if requesting user is an admin
+            if handle.admin {
+                requested
+            } else {
+                return Json(Reply::Denied { token: handle.token });
+            }
         } else {
             handle.user_id
         };
 
-        let target_device_id = if let Some(request) = device.device_id {
-            request
+        let target_device_id = if let Some(requested) = device.device_id {
+            if handle.admin {
+                requested
+            } else {
+                return Json(Reply::Denied { token: handle.token });
+            }
         } else if handle.user_id != target_user_id {
             // Different user, but no device ID given, setting to default
             0
@@ -155,7 +218,11 @@ pub async fn create_device(data: Data<Connection>, device: Json<RequestDevice>) 
     if let Ok(handle) = res {
         if let Some(device_name) = &device.device_name {
             let target_user_id = if let Some(requested) = device.user_id {
-                requested // TODO check if requesting user is an admin
+                if handle.admin {
+                    requested
+                } else {
+                    return Json(Reply::Denied { token: handle.token });
+                }
             } else {
                 handle.user_id
             };
@@ -182,13 +249,21 @@ pub async fn delete_device(data: Data<Connection>, device: Json<RequestDevice>) 
     let res = handle_auth_request(&data, device.token);
     if let Ok(mut handle) = res {
         let target_user_id = if let Some(requested) = device.user_id {
-            requested // TODO check if requesting user is an admin
+            if handle.admin {
+                requested
+            } else {
+                return Json(Reply::Denied { token: handle.token });
+            }
         } else {
             handle.user_id
         };
 
-        let target_device_id = if let Some(request) = device.device_id {
-            request
+        let target_device_id = if let Some(requested) = device.device_id {
+            if handle.admin {
+                requested
+            } else {
+                return Json(Reply::Denied { token: handle.token });
+            }
         } else if handle.user_id != target_user_id {
             // Different user, but no device ID given, setting to default
             0
@@ -240,10 +315,6 @@ pub async fn delete_device(data: Data<Connection>, device: Json<RequestDevice>) 
 
 #[post("/test")]
 pub async fn get_test(dat: Option<Json<String>>, req: HttpRequest) -> Json<String> {
-    
-
-    
-
     let res = req.cookie("foo");
     if let Some(cookie) = res {
 

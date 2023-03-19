@@ -2,8 +2,7 @@ use std::path::PathBuf;
 use std::{io, path::Path};
 use std::io::prelude::*;
 use std::fs::{File, self};
-use sha3::Digest;
-use common::{U232,LargeU};
+use common::U232;
 
 // If this is compiled in 32bit then we would be restricted to 2gb files
 pub fn read_bytes(file_name: &Path) -> io::Result<Vec<u8>> {
@@ -74,21 +73,11 @@ pub fn get_folder_content(folder_path: &Path) -> Vec<PathBuf> {
     list
 }
 
-pub fn hash_data(list_of_bytes: &[u8]) -> U232{
-    let mut hasher = sha3::Sha3_224::new(); // Sha3_256::new();
-
-    hasher.update(list_of_bytes);
-    
-    let res = hasher.finalize();
-    
-    U232::from_u8arr(res.as_slice())
-}
-
 pub fn hash_file(file_name: &Path) -> io::Result<U232> {
     let res = read_bytes(file_name);
 
     if let Ok(bytes) = res {
-        return Ok(hash_data(&bytes[..]));
+        return Ok(common::hash_data(&bytes[..]));
     }
 
     Err(res.unwrap_err())

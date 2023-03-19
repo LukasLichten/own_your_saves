@@ -347,7 +347,7 @@ impl StorageRepo {
             prev_com_id) = if let Some(prev) = prev_commit {
             
             if let Ok(new_data) = io::read_bytes(location) {
-                let new_hash = io::hash_data(new_data.as_slice());
+                let new_hash = common::hash_data(new_data.as_slice());
                 let old_id = U232::from_u8arr(common::hex_string_to_bytes(&prev.name).as_slice());
 
                 if new_hash == old_id {
@@ -371,7 +371,7 @@ impl StorageRepo {
         } else {
             // First commit
             if let Ok(new_data) = io::read_bytes(location) {
-                let new_hash = io::hash_data(new_data.as_slice());
+                let new_hash = common::hash_data(new_data.as_slice());
 
                 (new_data, vec![0_u8;0], new_hash, Some(location.file_name()), U232::new())
             } else {
@@ -525,8 +525,8 @@ impl StorageRepo {
         }
 
         // Check of the instructions:
-        if new_hash != io::hash_data(old_data.as_slice()) {
-            panic!("TODO write error handling for when instructions are incorrectly generating, producing a file that does not match\nTarget Hash:{}\nResulting Hash:{}",new_hash,io::hash_data(old_data.as_slice()));
+        if new_hash != common::hash_data(old_data.as_slice()) {
+            panic!("TODO write error handling for when instructions are incorrectly generating, producing a file that does not match\nTarget Hash:{}\nResulting Hash:{}",new_hash,common::hash_data(old_data.as_slice()));
         }
         
         repo_file.content.push(RepoFileType::Edit(instructions, pointer_size));
@@ -746,7 +746,7 @@ impl RepoFile {
         file.push(&self.name);
 
         if let Ok(data) = io::read_bytes(file.as_path()) {
-            let hash = io::hash_data(data.as_slice());
+            let hash = common::hash_data(data.as_slice());
 
             if hash != self.repo_file_hash { // file has changed, lets update
                 let mut other = decode_repo_file(data, file.file_name().unwrap().to_str().unwrap().to_string());
@@ -785,7 +785,7 @@ impl RepoFile {
 
         // We check if anything changed
         let data = self.to_bytes();
-        let new_hash = io::hash_data(data.as_slice());
+        let new_hash = common::hash_data(data.as_slice());
         if self.repo_file_hash == new_hash {
             return WritingStates::NotNecessary;
         }
@@ -794,7 +794,7 @@ impl RepoFile {
         if file.exists() {
             let res = io::read_bytes(file.as_path());
             if let Ok(file_data) = res {
-                let hash = io::hash_data(file_data.as_slice());
+                let hash = common::hash_data(file_data.as_slice());
                 
                 if new_hash == hash {
                     // In case we have written the file already, but not updated since
@@ -1208,7 +1208,7 @@ pub fn decode_repo_file(data: Vec<u8>, file_name: String) -> RepoFile {
         name: file_name,
         content: Vec::<RepoFileType>::new(),
         previous_commit: U232::new(),
-        repo_file_hash: io::hash_data(data.as_slice()),
+        repo_file_hash: common::hash_data(data.as_slice()),
     };
 
     let mut typ = data[1];

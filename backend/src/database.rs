@@ -8,6 +8,11 @@ use crate::file_processing;
 
 const SCHEMA_VERSION:usize = 0;
 
+const KEY_VERSION:&str = "version";
+const KEY_EXPIRE_TIME:&str = "expire_time";
+const KEY_REPLACEMENT_TIME:&str = "replacement_time";
+
+
 pub fn init_sql() -> Connection {
     let mut path = std::env::var("DB_PATH").unwrap_or("./target/db/dat.db".to_string()); // TODO handle release, although this technically works as a default there too
     
@@ -54,7 +59,7 @@ pub fn init_sql() -> Connection {
     
     error_handle(res);
     
-    let res = get_key_value(&connection, "version".to_string());
+    let res = get_key_value(&connection, KEY_VERSION.to_string());
     if let Some(val) = res {
         if let Ok(version) = val.parse() {
             if version != SCHEMA_VERSION {
@@ -66,20 +71,23 @@ pub fn init_sql() -> Connection {
             panic!("Database could not be loaded, version number is corrupted and reads: {}", val);
         }
     } else {
-        set_key_value(&connection, "version".to_string(), SCHEMA_VERSION.to_string());
+        set_key_value(&connection, KEY_VERSION.to_string(), SCHEMA_VERSION.to_string());
+        set_key_value(&connection, KEY_EXPIRE_TIME.to_string(), (7 * 24 * 60 * 60).to_string()); // 7 days
+        set_key_value(&connection, KEY_REPLACEMENT_TIME.to_string(), (2 * 60 * 60).to_string()); // 2 h
 
         // Database is new, we generate the whole schema
-        // INSERT INTO keyvalues (key, value) VALUES ('version', '{}');
         let res = connection.execute_batch(format!(
             "CREATE TABLE users(
                 user_id INTEGER PRIMARY KEY,
                 user_name TINYTEXT NOT NULL UNIQUE,
-                password BINARY(32) NOT NULL
+                password BINARY(32) NOT NULL,
+                admin BOOL NOT NULL DEFAULT FALSE
             );
             CREATE TABLE devices(
                 user_id INTEGER,
                 device_id UNSIGNED TINYINT,
                 device_name TEXT,
+
                 PRIMARY KEY (user_id, device_id),
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
@@ -87,6 +95,8 @@ pub fn init_sql() -> Connection {
                 token BLOB PRIMARY KEY,
                 user_id INTEGER,
                 device_id UNSIGNED TINYINT,
+                creation_time INTEGER DEFAULT (strftime('%s','now')),
+
                 FOREIGN KEY (user_id) REFERENCES users(user_id),
                 FOREIGN KEY (user_id, device_id) REFERENCES devices(user_id, device_id)
             );
@@ -125,11 +135,15 @@ pub fn get_key_value(conn: &Connection, key: String) -> Option<String> {
     None
 }
 
-pub fn authenticate(conn: &Connection, input_carrier:&TokenCarrier) -> Option<TokenCarrier> {
-    let res:Result<(TokenCarrier,u32), rusqlite::Error> = conn.query_row(format!("SELECT token, device_id, user_id FROM tokens WHERE token=x'{}'", input_carrier.token_as_hex_string()).as_str(), params![],
-             |row| Ok((TokenCarrier::new(row.get(0)?, row.get(1)?),row.get(2)?)));
+fn delete_token(conn: &Connection, token: TokenCarrier) -> Result<usize, rusqlite::Error> {
+    conn.execute(format!("DELETE FROM tokens WHERE token=x'{}'", token.token_as_hex_string()).as_str(), params![])
+}
 
-    if let Ok((car, user_id)) = res {
+pub fn authenticate(conn: &Connection, input_carrier:&TokenCarrier) -> Option<TokenCarrier> {
+    let res:Result<(TokenCarrier,u32,i64), rusqlite::Error> = conn.query_row(format!("SELECT token, device_id, user_id, creation_time FROM tokens WHERE token=x'{}'", input_carrier.token_as_hex_string()).as_str(), params![],
+             |row| Ok((TokenCarrier::new(row.get(0)?, row.get(1)?),row.get(2)?, row.get(3)?)));
+
+    if let Ok((car, user_id, creation_timestamp)) = res {
         if let Some(input_device_id) = input_carrier.device_id {
             //If device id was omitted then we don't change device
             if car.get_device_id() != input_device_id {
@@ -137,7 +151,7 @@ pub fn authenticate(conn: &Connection, input_carrier:&TokenCarrier) -> Option<To
                 // Check if the device exists
                 if let Some(device) = get_device(conn, user_id, input_device_id) {
                     // Delete the old token
-                    let res = conn.execute(format!("DELETE FROM tokens WHERE token=x'{}'", car.token_as_hex_string()).as_str(), params![]);
+                    let res = delete_token(conn, car);
                     if let Err(_e) = res {
                         return None;
                     }
@@ -149,13 +163,44 @@ pub fn authenticate(conn: &Connection, input_carrier:&TokenCarrier) -> Option<To
             }
         }
 
-        // TODO replacing old tokens when it is time
-        
-
-        return Some(car);
+        // Checking if the token is expired
+        return token_replacement_check(conn, car, user_id, creation_timestamp);
     }
 
     None
+}
+
+fn token_replacement_check(conn: &Connection, token: TokenCarrier, user_id: u32, creation_timestamp: i64) -> Option<TokenCarrier> {
+    let curr = chrono::Utc::now().timestamp();
+    if let Some(exp) = get_key_value(conn, KEY_EXPIRE_TIME.to_string()) {
+        if let Ok(expire) = exp.parse() {
+            let expire: i64 = expire;
+            if curr > (expire + creation_timestamp) {
+                // The token has expired, so we delete the token and reject auth
+                let _res = delete_token(conn, token);
+                return None;
+            }
+        }
+    }
+    if let Some(rep) = get_key_value(conn, KEY_REPLACEMENT_TIME.to_string()) {
+        if let Ok(replace) = rep.parse() {
+            let replace: i64 = replace;
+            if curr > (replace + creation_timestamp) {
+                // The token is getting up in age, we should replace it
+
+                if let Some(device_id) = token.device_id {
+                    let res = delete_token(conn, token);
+                    if let Err(_e) = res {
+                        return None
+                    }
+            
+                    return Some(TokenCarrier { token: create_token(conn, user_id, device_id), device_id: Some(device_id) });
+                }
+            }
+        }
+    }
+    
+    Some(token)
 }
 
 pub fn login(conn: &Connection, name: String, password: U256, device_id: u8) -> Option<TokenCarrier> {
@@ -183,7 +228,7 @@ pub fn login(conn: &Connection, name: String, password: U256, device_id: u8) -> 
     None
 }
 
-// If the device does not exist we get a Stack overflow
+// If the device does not exist we get a /*Stack overflow*/ panic, to prevent a Stack overflow
 fn create_token(conn: &Connection, user_id: u32, device_id: u8) -> Uuid {
     let token = Uuid::new_v4();
 
@@ -198,20 +243,39 @@ fn create_token(conn: &Connection, user_id: u32, device_id: u8) -> Uuid {
         let _res = conn.execute(format!("DELETE FROM tokens WHERE user_id='{}' AND device_id='{}' AND NOT token=x'{}'", user_id, device_id, TokenCarrier::new_token(token).token_as_hex_string()).as_str(), params![]);
 
         return token;
-    } else if let Err(e) = res {
-        println!("{}",e.to_string());
+    } else if let Err(_e) = res {
+       if let None = get_device(conn, user_id, device_id) {
+            panic!("Tried creating a token for user {} device {}, which did not exist.
+            \nThis should be usually prevented, but didn't work this time.",user_id, device_id);
+            // Stackoverflows crash the programm, panic's only terminate the responds, which is acceptable
+       }
     }
 
     create_token(conn, user_id, device_id)
 }
 
 pub fn get_auth_handle_from_token(conn: &Connection, token: Uuid) -> Option<AuthHandle> {
-    let res: Result<(u32, u8), rusqlite::Error> = conn.query_row(format!("SELECT user_id, device_id FROM tokens WHERE token=x'{}'",
-        TokenCarrier::new_token(token).token_as_hex_string()).as_str(), params![], |row| Ok((row.get(0)?, row.get(1)?)));
+    let res: Result<(u32, u8, i64, bool), rusqlite::Error> = conn.query_row(format!(
+        "SELECT users.user_id, device_id, creation_time, admin FROM (SELECT * FROM tokens WHERE token=x'{}') as tok INNER JOIN users ON tok.user_id=users.user_id",
+        TokenCarrier::new_token(token).token_as_hex_string()).as_str(), params![], 
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)));
 
-    if let Ok((user_id, device_id)) = res {
-        //TODO handle token replacement
-        return Some(AuthHandle{ user_id, device_id, token: None });
+    if let Ok((user_id, device_id, creation_timestamp, admin)) = res {
+        let token = TokenCarrier { token, device_id: Some(device_id) };
+
+        let res = token_replacement_check(conn, token.clone(), user_id, creation_timestamp);
+        if let Some(new_token) = res {
+            if token == new_token {
+                // Meaning this is a valid token, don't need to return it
+                return Some(AuthHandle{ user_id, device_id, token: None, admin });
+            } else {
+                // Token was updated
+                return Some(AuthHandle{ user_id, device_id, token: Some(new_token), admin });
+            }
+        } else {
+            // Reauth failed, meaning we deny access
+            return None;
+        }
     }
 
     None
@@ -267,8 +331,21 @@ pub fn delete_device(conn: &Connection, user_id: u32, device_id: u8) -> bool{
     false
 }
 
-pub fn create_user(conn: &Connection, name: String, password: U256) -> bool {
-    let res = conn.execute("INSERT INTO users (user_name, password) VALUES (?1, ?2)", (sanetize_string(&name), password.to_be_bytes()));
+pub fn create_user(conn: &Connection, name: String, password: U256, admin: bool) -> bool {
+    // Check if there is at least one user, if not admin is forced to true
+    let res:Result<i64, rusqlite::Error> = conn.query_row("SELECT count(user_id) FROM users", params![], |row| Ok(row.get(0)?));
+    let admin = if let Ok(count) = res {
+        if count == 0 {
+            true
+        } else {
+            admin
+        }
+    } else {
+        admin
+    };
+
+
+    let res = conn.execute("INSERT INTO users (user_name, password, admin) VALUES (?1, ?2, ?3)", (sanetize_string(&name), password.to_be_bytes(), admin));
 
     if let Ok(_c) = res {
         let res:Result<u32, rusqlite::Error> = conn.query_row(format!("SELECT user_id FROM users WHERE user_name='{}'", sanetize_string(&name)).as_str(), params![],|row| row.get(0));
@@ -285,15 +362,45 @@ pub fn create_user(conn: &Connection, name: String, password: U256) -> bool {
 }
 
 pub fn get_user(conn: &Connection, user_id: u32) -> Option<User> {
-    let res:Result<User, rusqlite::Error> = conn.query_row(format!("SELECT user_id, user_name, password FROM users WHERE user_id='{}'", user_id).as_str(), params![],|row| {
-        Ok(User{user_id: row.get(0)?, user_name: row.get(1)?})
+    let res:Result<User, rusqlite::Error> = conn.query_row(format!("SELECT user_id, user_name, admin FROM users WHERE user_id='{}'", user_id).as_str(), params![],|row| {
+        Ok(User{user_id: row.get(0)?, user_name: row.get(1)?, admin: row.get(2)?})
     });
 
     if let Ok(user) = res {
         return Some(user);
+    } else if let Err(e) = res {
+        println!("{}", e.to_string());
     }
 
     None
+}
+
+pub fn delete_user(conn: &Connection, user_id: u32) -> bool {
+    // Check if this is the last admin
+    let res:Result<i64, rusqlite::Error> = conn.query_row(format!("SELECT count(user_id) FROM users WHERE admin=TRUE AND NOT user_id={}",user_id).as_str(), params![], |row| Ok(row.get(0)?));
+    if let Ok(count) = res {
+        if count == 0 {
+            // Can't let you delete the last admin
+            return false;
+        }
+    }
+
+
+    // Removing all tokens
+    let res = conn.execute(format!("DELETE FROM tokens WHERE user_id='{}'", user_id).as_str(), params![]);
+    if let Ok(_s) = res {
+        // Deleting the devices
+        let res = conn.execute(format!("DELETE FROM devices WHERE user_id='{}'", user_id).as_str(), params![]);
+        if let Ok(_s) = res {
+            // Deleting the user finally
+            let res = conn.execute(format!("DELETE FROM users WHERE user_id='{}'", user_id).as_str(), params![]);
+            if let Ok(_s) = res {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 pub fn get_all_users(conn: &Connection) -> Vec<RequestUser> {
@@ -337,7 +444,8 @@ fn migrate_db(_conn: &Connection, curr_version:usize) {
 pub struct AuthHandle {
     pub user_id: u32,
     pub device_id: u8,
-    pub token: Option<TokenCarrier>
+    pub token: Option<TokenCarrier>,
+    pub admin: bool
 }
 
 

@@ -12,6 +12,7 @@
 pub mod data;
 
 use serde::{Deserialize, Serialize};
+use sha3::Digest;
 
 
 
@@ -185,3 +186,12 @@ pub fn hex_string_to_bytes(text: &String) -> Vec<u8> {
     out
 }
 
+pub fn hash_data(list_of_bytes: &[u8]) -> U232{
+    let mut hasher = sha3::Sha3_224::new(); // Sha3_256::new();
+
+    hasher.update(list_of_bytes);
+    
+    let res = hasher.finalize();
+    
+    U232::from_u8arr(res.as_slice())
+}

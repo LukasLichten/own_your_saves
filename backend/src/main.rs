@@ -26,10 +26,11 @@ async fn main() -> std::io::Result<()> {
         .service(
             scope("/api")
                 .service(task::get_ping)
-                .service(task::create_new_user)
                 .service(task::login)
                 .service(task::auth)
+                .service(task::create_new_user)
                 .service(task::get_user)
+                .service(task::delete_user)
                 .service(task::get_device)
                 .service(task::create_device)
                 .service(task::delete_device)
