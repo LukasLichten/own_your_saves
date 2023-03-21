@@ -2,6 +2,8 @@ pub mod file_processing;
 pub mod api;
 pub mod database;
 
+use std::sync::Mutex;
+
 use api::task;
 
 use actix_web::{HttpServer, App, web::{Data, scope}, middleware::Logger};
@@ -18,11 +20,15 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         let logger = Logger::default();
         let database = database::init_sql();
+        let repocontroller = file_processing::init();
+        
         let data = Data::new(database);
+        let repo = Data::new(Mutex::new(repocontroller));
 
         App::new()
         .wrap(logger)
         .app_data(data)
+        .app_data(repo)
         .service(
             scope("/api")
                 .service(task::get_ping)

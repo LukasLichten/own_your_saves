@@ -1,9 +1,9 @@
-use std::{path::{Path, PathBuf}, collections::HashMap};
+use std::{path::{Path, PathBuf}, collections::HashMap, sync::{Mutex, MutexGuard}};
 use super::io;
 use common::{U232,LargeU};
 
 pub fn read_storage_info(folder: &Path) -> std::io::Result<StorageRepo>{
-    let mut file = PathBuf::from(folder.as_os_str());
+    let mut file = PathBuf::from(folder);
     file.push("HEADER");
     
     if let Ok(head_file) = read_repo_file(file.as_path()) {
@@ -14,7 +14,7 @@ pub fn read_storage_info(folder: &Path) -> std::io::Result<StorageRepo>{
                 folder: folder.as_os_str().to_str().unwrap().to_string(),
                 header:head_file,
                 branches: Vec::<RepoFile>::new(),
-                commits: HashMap::<U232, RepoFile>::new()
+                commits: HashMap::<U232, Mutex<RepoFile>>::new()
             };
 
             repo.read_branches(&head_info);
@@ -49,7 +49,7 @@ pub fn new_repo(folder: &Path, name: String) -> std::io::Result<StorageRepo> {
         branches: Vec::<String>::new()
     };
 
-    let header_repo_file = RepoFile {
+    let mut header_repo_file = RepoFile {
         version: 0,
         name: "HEADER".to_string(),
         content: vec![RepoFileType::Head(head); 1],
@@ -63,7 +63,7 @@ pub fn new_repo(folder: &Path, name: String) -> std::io::Result<StorageRepo> {
         folder: folder.to_str().unwrap().to_string(),
         header: header_repo_file,
         branches: Vec::<RepoFile>::new(),
-        commits: HashMap::<U232, RepoFile>::new()
+        commits: HashMap::<U232, Mutex<RepoFile>>::new()
     })
 
 }
@@ -72,7 +72,7 @@ pub struct StorageRepo {
     folder: String,
     header: RepoFile,
     branches: Vec<RepoFile>,
-    commits: HashMap<U232, RepoFile>
+    commits: HashMap<U232, Mutex<RepoFile>>
 }
 
 impl StorageRepo {
@@ -97,7 +97,7 @@ impl StorageRepo {
         }
     }
 
-    pub fn get_commit(&mut self, id: U232) -> std::io::Result<&RepoFile> {
+    pub fn get_commit(&mut self, id: U232) -> std::io::Result<&Mutex<RepoFile>> {
         let mut file = PathBuf::from(&self.folder);
 
         if self.commits.contains_key(&id) {
@@ -116,7 +116,7 @@ impl StorageRepo {
 
         let res = read_repo_file(file.as_path());
         if let Ok(commit) = res {
-            self.commits.insert(id, commit); //adding it to the cache
+            self.commits.insert(id, Mutex::new(commit)); //adding it to the cache
             return Ok(&self.commits[&id]);
 
         } else if let Err(e) = res {
@@ -129,10 +129,16 @@ impl StorageRepo {
         ))
     }
 
-    pub fn insert_commit(&mut self, commit: RepoFile) {
+    fn insert_commit(&mut self, commit: Mutex<RepoFile>) -> U232 {
         let folder = PathBuf::from(&self.folder);
-        commit.write_file_back(folder.as_path());
-        self.commits.insert(U232::from_u8arr(common::hex_string_to_bytes(&commit.name).as_slice()), commit);
+        let hash = {
+            let mut commit = commit.lock().unwrap();
+            commit.write_file_back(folder.as_path());
+            U232::from_u8arr(common::hex_string_to_bytes(&commit.name).as_slice())
+        };
+        
+        self.commits.insert(hash.clone(), commit);
+        hash
     }
 
     // TODO assess if this is okay, afterall it may stand in our way to figure out what was deleted in a commit
@@ -141,6 +147,7 @@ impl StorageRepo {
         let mut hash = hash.clone();
         let mut party_byte = 0;
         while let Ok(conflict) = self.get_commit(hash) {
+            let conflict = conflict.lock().unwrap();
             if let RepoFileType::Delete = conflict.get_type(0x05) {
                 break; // We can reuse existing deletes
             }
@@ -252,7 +259,7 @@ impl StorageRepo {
                 header.branches.push(branch_name.clone());
                 
                 // Create branch file
-                let branch = RepoFile {
+                let mut branch = RepoFile {
                     version: 0,
                     name: branch_name.clone(),
                     content: vec![RepoFileType::BranchHead;1],
@@ -291,7 +298,7 @@ impl StorageRepo {
         true
     }
 
-    pub fn create_commit(&mut self, prev_commit_id: U232, location: &Path) -> Option<RepoFile> {
+    pub fn create_commit(&mut self, prev_commit_id: U232, location: &Path) -> Option<U232> {
         if !location.exists() {
             if prev_commit_id == U232::new() {
                 // Nothing to commit, exiting
@@ -306,22 +313,25 @@ impl StorageRepo {
                     repo_file_hash: U232::new()
                 };
 
-                self.insert_commit(repo.clone());
-
-                return Some(repo);
+                return Some(self.insert_commit(Mutex::new(repo)));
             }
         }
 
         if let Ok(repo_file) = self.get_commit(prev_commit_id){
-            let repo_file = repo_file.clone();
-            if let RepoFileType::Folder(_files) = repo_file.get_type(0x0F) {
+
+            let res  = { 
+                let repo_file = repo_file.lock().unwrap();
+                repo_file.get_type(0x0F).clone()
+            };
+
+            if let RepoFileType::Folder(_files) = res {
                 if location.is_dir() {
-                    return self.create_folder_commit(Some(&repo_file), location);
+                    return self.create_folder_commit(Some(prev_commit_id), location);
                 } else {
-                    //
+                    // TODO
                 }
             } else {
-                return self.create_file_commit(Some(&repo_file), location);
+                return self.create_file_commit(Some(prev_commit_id), location);
             }
         } else {
             // No previous commit
@@ -335,27 +345,26 @@ impl StorageRepo {
         None
     }
 
-    fn create_folder_commit(&mut self, prev_commit: Option<&RepoFile>, location: &Path) -> Option<RepoFile> {
+    fn create_folder_commit(&mut self, prev_commit: Option<U232>, location: &Path) -> Option<U232> {
         None
     }
 
-    fn create_file_commit(&mut self, prev_commit: Option<&RepoFile>, location: &Path) -> Option<RepoFile> {
+    fn create_file_commit(&mut self, prev_commit: Option<U232>, location: &Path) -> Option<U232> {
         let (new_data,
             mut old_data,
             new_hash,
             rename,
-            prev_com_id) = if let Some(prev) = prev_commit {
+            prev_com_id) = if let Some(old_id) = prev_commit {
             
             if let Ok(new_data) = io::read_bytes(location) {
                 let new_hash = common::hash_data(new_data.as_slice());
-                let old_id = U232::from_u8arr(common::hex_string_to_bytes(&prev.name).as_slice());
 
                 if new_hash == old_id {
                     // no changes in the file, return the Prev commit
-                    return Some(prev.clone());
+                    return Some(old_id);
                 }
 
-                let (loc, old_data) = self.build_file(prev, location);
+                let (loc, old_data) = self.build_file(old_id, location);
 
                 let rename = if loc.file_name() != location.file_name() {
                     Some(location.file_name())
@@ -364,7 +373,7 @@ impl StorageRepo {
                 };
 
                 (new_data, old_data, new_hash, rename, old_id)
-            } else {
+             } else {
                 //TODO handling this case properly
                 return None;
             }
@@ -530,35 +539,64 @@ impl StorageRepo {
         }
         
         repo_file.content.push(RepoFileType::Edit(instructions, pointer_size));
-
-        self.insert_commit(repo_file.clone());
-
         
-        Some(repo_file)
+        Some(self.insert_commit(Mutex::new(repo_file)))
+    }
+
+    fn get_commit_chain<'a>(&'a mut self, commit: U232) -> Vec<&'a Mutex<RepoFile>> {
+        let mut stack = Vec::<&Mutex<RepoFile>>::new();
+
+        let mut ids = Vec::<U232>::new();
+        let mut index = commit;
+        while let Ok(res) = self.get_commit(index) {
+            let prev_commit = {
+                let file = res.lock().unwrap();
+                file.previous_commit.clone()
+                //TODO potentially cut down calls, as build folder and file do not need the full history
+            };
+
+            ids.push(prev_commit.clone());
+            index = prev_commit;
+        }
+
+        for i in ids {
+            if self.commits.contains_key(&i) { // just avoid the zero pointer from the initial commit
+                stack.push(&self.commits[&i]);
+            }
+        }
+
+        stack
     }
 
     pub fn build_commit(&mut self, commit_id: U232, target_folder: &Path) {
         if let Ok(repo_file) = self.get_commit(commit_id){
-            let repo_file = repo_file.clone();
+            
 
-            if let RepoFileType::Folder(_d) = repo_file.get_type(0x0F) {
-                self.build_folder(&repo_file, target_folder);
+            let res = { 
+                let repo_file = repo_file.lock().unwrap();
+                repo_file.get_type(0x0F).clone()
+            };
+
+            if let RepoFileType::Folder(_d) = res {
+                self.build_folder(commit_id, target_folder);
             } else {
-                let (file, data) = self.build_file(&repo_file, target_folder);
-                io::write_bytes(file.as_path(), data);
+                let (file, data) = self.build_file(commit_id, target_folder);
+                let _res = io::write_bytes(file.as_path(), data); //TODO prober handling
             }
         }
     }
 
-    fn build_file(&mut self, repo_file: &RepoFile, target_folder: &Path) -> (PathBuf, Vec<u8>) {
-        let mut stack = Vec::<RepoFile>::new();
+    fn build_file(&mut self, commit: U232, target_folder: &Path) -> (PathBuf, Vec<u8>) {
+        let mut stack = Vec::<MutexGuard<RepoFile>>::new();
 
         let mut max_file_size:usize = 0;
         let mut cur_file_size:usize = 0;
         let mut file_name = String::new();
 
-        let mut temp = repo_file.clone();
-        loop { // Do-while
+        let full_history = self.get_commit_chain(commit);
+        for temp in full_history {
+            let temp = temp.lock().unwrap();
+
             // Let us also check for the largest file size, needed for defining the size of our build file
             if let RepoFileType::Resize(size) = temp.get_type(0x08) {
                 let size = size.clone().try_into().unwrap();
@@ -578,16 +616,12 @@ impl StorageRepo {
                 }
             }
 
-            // The iteration part
+            // Writing onto the stack
             if let RepoFileType::NewFile = temp.get_type(0x03) { // We exit once we read in all instruction up to a New File
                 stack.push(temp);
                 break;
-            } else if let Ok(t) = self.get_commit(temp.previous_commit) {
-                stack.push(temp);
-                temp = t.clone();
             } else {
-                //idk, either we got an error on io, or reached the first commit without a new file
-                break; // But we have to break, else risk a deadlock
+                stack.push(temp);
             }
         }
 
@@ -595,7 +629,7 @@ impl StorageRepo {
         let mut pointer_size: usize = 0;
 
         // Executing the code
-        while let Some(item) = stack.pop() {
+        while let Some(mut item) = stack.pop() {
             let res = item.get_type(0x02);
             
             if let RepoFileType::Edit(ins, p_size) = res {
@@ -611,7 +645,7 @@ impl StorageRepo {
                 }
 
                 // Processing Instructions
-                let mut item = item;
+                //let mut item = item;
                 item.parse_edit_instructions(pointer_size);
 
                 // Running instructions
@@ -623,7 +657,7 @@ impl StorageRepo {
                 }
 
                 // Updating cache
-                self.insert_commit(item);
+                //self.insert_commit(item);
             } else if let Ok(p_size) = item.get_pointer_size() {
                 // This is for the special case that there was no edit instruction, but a resize instruction, so we update that for future commits
                 pointer_size = p_size.clone(); 
@@ -641,29 +675,38 @@ impl StorageRepo {
 
     }
 
-    fn build_folder(&mut self, repo_file: &RepoFile, target_folder: &Path) {
+    fn build_folder(&mut self, commit: U232, target_folder: &Path) {
         let mut folder_path = PathBuf::from(target_folder.as_os_str());
 
-        let mut temp = repo_file.clone();
-        while let RepoFileType::None = temp.get_type(0x0D) { // New Folder, aka it returns None if it is not contained, therefore let us continue iterating
-            if let Ok(t) = self.get_commit(temp.previous_commit) {
-                temp = t.clone();
-            } else {
-                //idk, either we got an error on io, or reached the first commit without a new folder
-                break; // But we have to break, else risk a deadlock
-            }
+        let full_history = self.get_commit_chain(commit);
+        if full_history.len() == 0 {
+            return; // Commit does not exist
         }
 
-        // Creating the folder
-        if let RepoFileType::NewFolder(name) = temp.get_type(0x0D) {
-            folder_path.push(name);
-            if let Err(e) = io::create_folder(folder_path.as_path()) {
-                // TODO
+        // Used later to build the folder
+        let res = {
+            let val = &full_history[0];
+            let newest_commit = val.lock().unwrap();
+            newest_commit.get_type(0x0F).clone()
+        };
+
+        // Getting the new folder instruction to the get the 
+        for item in full_history {
+            let temp = item.lock().unwrap();
+
+            if let RepoFileType::NewFolder(name) = temp.get_type(0x0D) {
+                folder_path.push(name);
+
+                // Creating the folder
+                if let Err(_e) = io::create_folder(folder_path.as_path()) {
+                    // TODO
+                }
+                break;
             }
         }
 
         // Building the folder
-        if let RepoFileType::Folder(items) = repo_file.get_type(0x0F) {
+        if let RepoFileType::Folder(items) = res {
             let mut iter = items.iter();
             while let Some(commit) = iter.next() {
                 self.build_commit(commit.clone(), folder_path.as_path());
@@ -779,7 +822,7 @@ impl RepoFile {
         self.previous_commit
     }
 
-    pub fn write_file_back(& self, folder: &Path) -> WritingStates{
+    pub fn write_file_back(&mut self, folder: &Path) -> WritingStates{
         let mut file = PathBuf::from(folder.as_os_str());
         file.push(&self.name);
 
@@ -794,14 +837,15 @@ impl RepoFile {
         if file.exists() {
             let res = io::read_bytes(file.as_path());
             if let Ok(file_data) = res {
-                let hash = common::hash_data(file_data.as_slice());
+                let file_hash = common::hash_data(file_data.as_slice());
                 
-                if new_hash == hash {
+                if new_hash == file_hash {
                     // In case we have written the file already, but not updated since
+                    self.repo_file_hash = new_hash;
                     return WritingStates::NotNecessary;
                 }
 
-                if hash != self.repo_file_hash { 
+                if file_hash != self.repo_file_hash { 
                     // File has been updated since last pull
                     return WritingStates::Conflict(data);
                 }
@@ -822,8 +866,7 @@ impl RepoFile {
             return WritingStates::Err(e);
         }
 
-        // There is one weakness: We have not updated the self.repo_file_hash, which would require us to borrow mut
-        // Consequence: A reread will reread the file, even though nothing has changed (which should not have any performance impact, as io has to happen anyway)
+        self.repo_file_hash = new_hash;
         WritingStates::Ok
     }
 

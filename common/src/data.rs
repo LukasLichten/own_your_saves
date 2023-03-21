@@ -141,3 +141,44 @@ impl<T> Reply<T> {
         Self::Ok { value, token: None }
     }
 }
+
+pub enum AccessType {
+    Read,
+    ReadWrite,
+    ReadWriteDelete,
+    All,
+    Owner,
+    No
+}
+
+impl AccessType {
+    pub fn from_str(typ: String) -> AccessType {
+        let typ = typ.to_uppercase();
+        match typ.as_str() {
+            "R" => AccessType::Read,
+            "RW" => AccessType::ReadWrite,
+            "RWD" => AccessType::ReadWriteDelete,
+            "A" => AccessType::All,
+            "O" => AccessType::Owner,
+            "N" => AccessType::No,
+            _ => AccessType::No
+        }
+    }
+
+    pub fn cast(& self) -> String {
+        match self {
+            AccessType::Read => "R",
+            AccessType::ReadWrite => "RW",
+            AccessType::ReadWriteDelete => "RWD",
+            AccessType::All => "A",
+            AccessType::Owner => "O",
+            AccessType::No => "N"
+        }.to_string()
+    }
+}
+
+pub struct Repository {
+    pub repo_name: String,
+    pub display_name: Option<String>,
+    pub game: Option<String>
+}

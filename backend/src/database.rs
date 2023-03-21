@@ -1,6 +1,6 @@
 use std::{path::{Path, PathBuf}, usize};
 
-use common::{U256, LargeU, data::{RequestUser, Device, TokenCarrier, User}};
+use common::{U256, LargeU, data::{RequestUser, Device, TokenCarrier, User, AccessType, Repository}};
 use rusqlite::{Connection, params};
 use uuid::Uuid;
 
@@ -99,6 +99,21 @@ pub fn init_sql() -> Connection {
 
                 FOREIGN KEY (user_id) REFERENCES users(user_id),
                 FOREIGN KEY (user_id, device_id) REFERENCES devices(user_id, device_id)
+            );
+            CREATE TABLE repository(
+                repo_name TEXT PRIMARY KEY,
+                display_name TEXT,
+                game TEXT
+
+            );
+            CREATE TABLE repo_access(
+                user_id INTEGER,
+                repo_name TEXT,
+                permission TEXT CHECK (permission IN ('R', 'RW', 'RWD', 'A', 'O', 'N')) NOT NULL DEFAULT 'R',
+
+                PRIMARY KEY (user_id, repo_name),
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (repo_name) REFERENCES repository(repo_name)
             );
             
                 ").as_str()
@@ -288,7 +303,7 @@ pub fn create_device(conn: &Connection, user_id: u32, device_name: String) -> Op
         for i in 1..=255_u8 {
             if let None = get_device(conn, user.user_id, i) {
                 // Finally a free ID
-                let res = conn.execute("INSERT INTO devices(user_id, device_id, device_name) VALUES (?1, ?2, ?3)", 
+                let res = conn.execute("INSERT INTO devices(user_id, device_id, device_name) VALUES (?1, ?2, '?3')", 
                         (user_id, i, sanetize_string(&device_name)));
 
                 if let Ok(_c) = res {
@@ -345,7 +360,7 @@ pub fn create_user(conn: &Connection, name: String, password: U256, admin: bool)
     };
 
 
-    let res = conn.execute("INSERT INTO users (user_name, password, admin) VALUES (?1, ?2, ?3)", (sanetize_string(&name), password.to_be_bytes(), admin));
+    let res = conn.execute("INSERT INTO users (user_name, password, admin) VALUES ('?1', ?2, ?3)", (sanetize_string(&name), password.to_be_bytes(), admin));
 
     if let Ok(_c) = res {
         let res:Result<u32, rusqlite::Error> = conn.query_row(format!("SELECT user_id FROM users WHERE user_name='{}'", sanetize_string(&name)).as_str(), params![],|row| row.get(0));
@@ -392,10 +407,14 @@ pub fn delete_user(conn: &Connection, user_id: u32) -> bool {
         // Deleting the devices
         let res = conn.execute(format!("DELETE FROM devices WHERE user_id='{}'", user_id).as_str(), params![]);
         if let Ok(_s) = res {
-            // Deleting the user finally
-            let res = conn.execute(format!("DELETE FROM users WHERE user_id='{}'", user_id).as_str(), params![]);
+            // Delete all the access permission
+            let res = conn.execute(format!("DELETE FROM repo_access WHERE user_id='{}'", user_id).as_str(), params![]);
             if let Ok(_s) = res {
-                return true;
+                // Deleting the user finally
+                let res = conn.execute(format!("DELETE FROM users WHERE user_id='{}'", user_id).as_str(), params![]);
+                if let Ok(_s) = res {
+                    return true;
+                }
             }
         }
     }
@@ -404,7 +423,6 @@ pub fn delete_user(conn: &Connection, user_id: u32) -> bool {
 }
 
 pub fn get_all_users(conn: &Connection) -> Vec<RequestUser> {
-        
         let mut stmt = conn.prepare("SELECT user_id, user_name, password FROM users").unwrap();
         
         let user_iter = stmt.query_map([], |row| {
@@ -425,6 +443,56 @@ pub fn get_all_users(conn: &Connection) -> Vec<RequestUser> {
         }
 
         data
+}
+
+pub fn create_repo(conn: &Connection, repo_name: String) -> bool {
+    let res = conn.execute(format!("INSERT INTO repository (repo_name) VALUES ('{}')",repo_name).as_str(), params![]);
+
+    if let Ok(_c) = res {
+        return true;
+    }
+
+    false
+}
+
+pub fn get_repo(conn: &Connection, repo_name: String) -> Option<Repository> {
+    let res:Result<Repository, rusqlite::Error> = conn.query_row(format!(
+        "SELECT repo_name, display_name, game FROM repository WHERE repo_name={}", repo_name).as_str(), params![], 
+        |row| Ok(Repository { repo_name: row.get(0)?, display_name: row.get(1)?, game: row.get(2)? }));
+
+    if let Ok(repo) = res {
+        return Some(repo);
+    }
+    
+    None
+}
+
+pub fn get_user_repo_permission(conn: &Connection, user_id: u32, repo_name: String) -> Option<AccessType> {
+    let res:Result<AccessType, rusqlite::Error> = conn.query_row(format!(
+        "SELECT permission FROM repo_access WHERE user_id={} AND repo_name={}", user_id, repo_name).as_str(), params![], 
+        |row| Ok(AccessType::from_str(row.get(0)?)));
+    
+    if let Ok(acc) = res {
+        return Some(acc);
+    }
+
+    None
+}
+
+pub fn set_user_repo_permission(conn: &Connection, user_id: u32, repo_name: String, permission: AccessType) -> bool {
+    let repo_name = sanetize_string(&repo_name);
+    if let Some(_user) = get_user(conn, user_id) {
+        if let Some(_repo) = get_repo(conn, repo_name.clone()) {
+            let res = conn.execute("INSERT OR REPLACE INTO repo_access(repo_name, user_id, permission) VALUES ('?1', ?2, ?3)", (repo_name, user_id, permission.cast()));
+
+            if let Ok(_c) = res {
+                return true;
+            }
+        }
+    }
+
+
+    false
 }
 
 
