@@ -1,8 +1,9 @@
 use actix_web::{get, post, web::{Data, Json}, HttpResponse, HttpRequest};
-use common::data::{RequestUser, User, TokenCarrier, RequestDevice, Reply, Device};
+use actix_web_lab::__reexports::tokio::sync::RwLock;
+use common::data::{RequestUser, User, TokenCarrier, RequestDevice, Reply, Device, RequestRepository, Repository, AccessType, RepositoryAccess};
 use rusqlite::Connection;
 use uuid::Uuid;
-use crate::database::{self, AuthHandle};
+use crate::{database::{self, AuthHandle}, file_processing::RepoController};
 
 #[get("/ping")]
 pub async fn get_ping() -> Json<String> {
@@ -313,8 +314,153 @@ pub async fn delete_device(data: Data<Connection>, device: Json<RequestDevice>) 
     Json(Reply::Failed)
 }
 
+#[get("/repo/info")]
+pub async fn get_repo(data: Data<Connection>, request: Json<RequestRepository>) -> Json<Reply<Repository>> {
+    let res = handle_auth_request(&data, request.token);
+    if let Ok(handle) = res {
+        if let Some(name) = &request.repo_name {
+            // Getting the repo
+            let res = database::get_repo(&data, name.clone());
+            if let Some(mut rep) = res {
+                
+                // Checking and setting the availability
+                let res = database::get_user_repo_permission(&data, handle.user_id, rep.repo_name.clone());
+                if let Some(perm) = res {
+                    if perm.is_read_allowed() {
+                        rep.permission = Some(perm);
+
+                        return Json(Reply::Ok { value: rep, token: handle.token });
+                    } else {
+                        return Json(Reply::Denied { token: handle.token });
+                    }
+                } else {
+                    return Json(Reply::Denied { token: handle.token });
+                }
+            } else {
+                return Json(Reply::NotFound { token: handle.token });
+            }
+        } else {
+            return Json(Reply::MissingParameter { token: handle.token });
+        }
+    } else if let Err(e) = res {
+        return e;
+    }
+
+    Json(Reply::Failed)
+}
+
+#[get("/repo/create")]
+pub async fn create_repo(repocontroller: Data<RwLock<RepoController>>, data: Data<Connection>, request: Json<RequestRepository>) -> Json<Reply<Repository>> {
+    let res = handle_auth_request(&data, request.token);
+    if let Ok(handle) = res {
+        
+        // Adding it to the Database
+        let res = database::create_repo(&data, request.clone());
+        if let Some(mut rep) = res {
+
+            // 
+            let mut repocontroller = repocontroller.write().await;
+            if repocontroller.create_repo(rep.repo_name.clone()) {
+                drop(repocontroller); // releasing the lock
+                database::set_user_repo_permission(&data, handle.user_id, rep.repo_name.clone(), AccessType::Owner);
+                rep.permission = Some(AccessType::Owner);
+
+                return Json(Reply::Ok { value: rep, token: handle.token });
+            } else {
+                // We have to undo the insertion into the DB
+                database::delete_repo(&data, rep.repo_name);
+                return Json(Reply::Error { token: handle.token })
+            }
+        } else {
+            return Json(Reply::Error { token: handle.token });
+        }
+    } else if let Err(e) = res {
+        return e;
+    }
+
+
+    Json(Reply::Failed)
+}
+
+#[get("/repo/permission/set")]
+pub async fn set_repo_access(data: Data<Connection>, request: Json<RepositoryAccess>) -> Json<Reply<()>> {
+    let res = handle_auth_request(&data, request.token);
+    if let Ok(handle) = res {
+        // Check if user exists
+        let res = database::get_user(&data, request.user_id);
+        if let Some(_other_user) = res {
+
+            //Check if we are allowed to update permission
+            let token_res = database::get_user_repo_permission(&data, handle.user_id, request.repo_name.clone());
+            let request_res = database::get_user_repo_permission(&data, request.user_id, request.repo_name.clone());
+
+            let allowed =
+            if request.user_id == handle.user_id {
+                if let Some(this_user) = token_res {
+                    if this_user == request.permission {
+                        true // No change is permitted
+                    } else if let AccessType::Owner = this_user {
+                        false // Demoting Owner not permitted
+                    } else if let AccessType::All = this_user {
+                        if let AccessType::Owner = request.permission {
+                            handle.admin // Can't promote to owner, except admin
+                        } else {
+                            true // Self demotion allowed
+                        }
+                    } else if let AccessType::No = request.permission { // Careful, this checks what is requested
+                        true // Allow self demotion to No access
+                    } else {
+                       handle.admin //admin may still change their perms
+                    }
+                } else {
+                    false // This user has no rights here
+                }
+            } else if handle.admin {
+                if let Some(other) = request_res {
+                    if let AccessType::Owner = other {
+                        other == request.permission // You can still not demote owners, but no change is permitted
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
+            } else if let Some(this_user) = token_res {
+                if let AccessType::Owner = this_user {
+                    true
+                } else if let AccessType::All = this_user {
+                    if let AccessType::Owner = request.permission {
+                        false // Can't promote past the current rank
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if allowed {
+                if database::set_user_repo_permission(&data, request.user_id, request.repo_name.clone(), request.permission.clone()) {
+                    return Json(Reply::Ok { value: (), token: handle.token })
+                }
+            } else {
+                return Json(Reply::Denied { token: handle.token })
+            }
+        } else {
+            return Json(Reply::NotFound { token: handle.token })
+        }
+    } else if let Err(e) = res {
+        return e;
+    }
+
+
+    Json(Reply::Failed)
+}
+
 #[post("/test")]
-pub async fn get_test(dat: Option<Json<String>>, req: HttpRequest) -> Json<String> {
+pub async fn get_test(dat: Data<RwLock<RepoController>>, req: HttpRequest) -> Json<String> {
     let res = req.cookie("foo");
     if let Some(cookie) = res {
 
@@ -338,8 +484,14 @@ pub async fn get_test(dat: Option<Json<String>>, req: HttpRequest) -> Json<Strin
     //     return Json(text);
     // }
 
-    if let Some(t) = dat {
-        return t;
-    }
+    // if let Some(t) = dat {
+    //     return t;
+    // }
+    
+    
+
+    let res = dat.read().await;
+    let _val = res.get_repo(&"Name".to_string()).unwrap();
+
     Json("".to_string())
 }

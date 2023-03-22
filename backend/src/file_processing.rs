@@ -14,7 +14,7 @@ pub fn init() -> RepoController {
     let path = std::env::var("REPO_PATH").unwrap_or("./target/repo/".to_string()); // TODO handle release, although this technically works as a default there too
     
     let place = PathBuf::from(&path);
-    if !place.is_dir() {
+    if place.exists() && !place.is_dir() {
         panic!("REPO_PATH has to be a folder. REPO_PATH value was: {}", path);
     }
 
@@ -47,6 +47,19 @@ impl RepoController {
                 self.repos.insert(name, Mutex::new(rep));
             }
         }
+    }
+
+    pub fn create_repo(&mut self, name: String) -> bool {
+        let mut path = PathBuf::from(&self.root_path);
+        path.push(&name);
+
+        let res = repository::new_repo(path.as_path(), name.clone());
+        if let Ok(repo) = res {
+            self.repos.insert(name, Mutex::new(repo));
+            return true;
+        }
+
+        false
     }
 
     pub fn get_repo(& self, name: &String) -> Option<&Mutex<StorageRepo>> {

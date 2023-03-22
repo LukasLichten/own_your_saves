@@ -142,6 +142,7 @@ impl<T> Reply<T> {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub enum AccessType {
     Read,
     ReadWrite,
@@ -175,10 +176,37 @@ impl AccessType {
             AccessType::No => "N"
         }.to_string()
     }
+
+    pub fn is_read_allowed(& self) -> bool {
+        if let AccessType::No = self {
+            return false;
+        }
+
+        true
+    }
+
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Repository {
     pub repo_name: String,
     pub display_name: Option<String>,
+    pub game: Option<String>,
+    pub permission: Option<AccessType>
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RequestRepository {
+    pub token: Option<Uuid>,
+    pub repo_name: Option<String>,
+    pub display_name: Option<String>,
     pub game: Option<String>
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RepositoryAccess {
+    pub token: Option<Uuid>,
+    pub repo_name: String,
+    pub user_id: u32,
+    pub permission: AccessType
 }

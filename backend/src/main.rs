@@ -2,12 +2,11 @@ pub mod file_processing;
 pub mod api;
 pub mod database;
 
-use std::sync::Mutex;
 
 use api::task;
 
 use actix_web::{HttpServer, App, web::{Data, scope}, middleware::Logger};
-use actix_web_lab::web::spa;
+use actix_web_lab::{web::spa, __reexports::tokio::sync::RwLock};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -23,7 +22,7 @@ async fn main() -> std::io::Result<()> {
         let repocontroller = file_processing::init();
         
         let data = Data::new(database);
-        let repo = Data::new(Mutex::new(repocontroller));
+        let repo = Data::new(RwLock::new(repocontroller));
 
         App::new()
         .wrap(logger)
@@ -41,6 +40,9 @@ async fn main() -> std::io::Result<()> {
                 .service(task::create_device)
                 .service(task::delete_device)
                 .service(task::get_test)
+                .service(task::get_repo)
+                .service(task::create_repo)
+                .service(task::set_repo_access)
 
         )
         //Production
