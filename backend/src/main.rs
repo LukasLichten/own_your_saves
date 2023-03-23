@@ -19,7 +19,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         let logger = Logger::default();
         let database = database::init_sql();
-        let repocontroller = file_processing::init();
+        let repocontroller = file_processing::init(&database);
         
         let data = Data::new(database);
         let repo = Data::new(RwLock::new(repocontroller));
@@ -39,11 +39,16 @@ async fn main() -> std::io::Result<()> {
                 .service(task::get_device)
                 .service(task::create_device)
                 .service(task::delete_device)
-                .service(task::get_test)
+                
                 .service(task::get_repo)
+                .service(task::list_repo)
                 .service(task::create_repo)
+                .service(task::delete_repo)
                 .service(task::set_repo_access)
+                .service(task::list_branches)
 
+
+                .service(task::get_test)
         )
         //Production
         .service(

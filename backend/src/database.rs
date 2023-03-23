@@ -446,6 +446,10 @@ pub fn get_all_users(conn: &Connection) -> Vec<RequestUser> {
         data
 }
 
+pub fn create_repo_fast(conn: &Connection, name: String) {
+    create_repo(conn, RequestRepository{ repo_name: Some(name), token: None, display_name: None, game: None});
+}
+
 pub fn create_repo(conn: &Connection, request: RequestRepository) -> Option<Repository> {
     if let Some(name) = request.repo_name {
         let name = sanetize_string(&name);
@@ -474,6 +478,40 @@ pub fn get_repo(conn: &Connection, repo_name: String) -> Option<Repository> {
     }
     
     None
+}
+
+pub fn list_repos(conn: &Connection, user_id: Option<u32>) -> Vec<Repository> {
+    let res = if let Some(user_id) = user_id {
+        conn.prepare(format!("SELECT repository.repo_name, display_name, game, permission FROM repository JOIN
+            (SELECT * FROM repo_access WHERE user_id={} AND NOT permission='N') as acc ON acc.repo_name = repository.repo_name",user_id).as_str())
+    } else {
+        // No user_id provided, just querrying all items
+        conn.prepare("SELECT repo_name, display_name, game, 'A' FROM repository")
+    };
+
+    let mut data = Vec::<Repository>::new();
+
+    if let Ok(mut stmt) = res {
+        let repo_iter = stmt.query_map([], |row| {
+            let val:Option<String> = row.get(3)?;
+            let acc = if let Some(val) = val {
+                Some(AccessType::from_str(val))
+            } else {
+                None
+            };
+            Ok(Repository { repo_name: row.get(0)?, display_name: row.get(1)?, game: row.get(2)?, permission: acc })
+        }).unwrap();
+        
+        for item in repo_iter {
+            if let Ok(repo) = item {
+                data.push(repo);
+            }
+        }
+    }
+
+    
+
+    data
 }
 
 pub fn delete_repo(conn: &Connection, repo_name: String) -> bool {

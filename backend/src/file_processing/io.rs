@@ -73,6 +73,10 @@ pub fn get_folder_content(folder_path: &Path) -> Vec<PathBuf> {
     list
 }
 
+pub fn delete_folder(folder_path: &Path) -> io::Result<()> {
+    fs::remove_dir_all(folder_path)
+}
+
 pub fn hash_file(file_name: &Path) -> io::Result<U232> {
     let res = read_bytes(file_name);
 

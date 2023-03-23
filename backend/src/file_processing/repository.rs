@@ -200,6 +200,10 @@ impl StorageRepo {
         None
     }
 
+    pub fn get_folder(& self) -> &String {
+        &self.folder
+    }
+
     pub fn delete_branch(&mut self, name: String) -> bool {
         
         if let RepoFileType::Head(head) = self.header.get_type(0x00) {

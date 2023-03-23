@@ -1,6 +1,6 @@
 use actix_web::{get, post, web::{Data, Json}, HttpResponse, HttpRequest};
 use actix_web_lab::__reexports::tokio::sync::RwLock;
-use common::data::{RequestUser, User, TokenCarrier, RequestDevice, Reply, Device, RequestRepository, Repository, AccessType, RepositoryAccess};
+use common::data::{RequestUser, User, TokenCarrier, RequestDevice, Reply, Device, RequestRepository, Repository, AccessType, RepositoryAccess, Branch};
 use rusqlite::Connection;
 use uuid::Uuid;
 use crate::{database::{self, AuthHandle}, file_processing::RepoController};
@@ -325,7 +325,10 @@ pub async fn get_repo(data: Data<Connection>, request: Json<RequestRepository>) 
                 
                 // Checking and setting the availability
                 let res = database::get_user_repo_permission(&data, handle.user_id, rep.repo_name.clone());
-                if let Some(perm) = res {
+                if handle.admin {
+                    rep.permission = Some(AccessType::All);
+                    return Json(Reply::Ok { value: rep, token: handle.token });
+                } else if let Some(perm) = res {
                     if perm.is_read_allowed() {
                         rep.permission = Some(perm);
 
@@ -342,6 +345,24 @@ pub async fn get_repo(data: Data<Connection>, request: Json<RequestRepository>) 
         } else {
             return Json(Reply::MissingParameter { token: handle.token });
         }
+    } else if let Err(e) = res {
+        return e;
+    }
+
+    Json(Reply::Failed)
+}
+
+#[get("/repo/list")]
+pub async fn list_repo(data: Data<Connection>, request: Json<RequestRepository>) -> Json<Reply<Vec<Repository>>> {
+    let res = handle_auth_request(&data, request.token);
+    if let Ok(handle) = res {
+        let data = if handle.admin {
+            database::list_repos(&data, None)
+        } else {
+            database::list_repos(&data, Some(handle.user_id))
+        };
+
+        return Json(Reply::Ok { value: data, token: handle.token });
     } else if let Err(e) = res {
         return e;
     }
@@ -378,6 +399,52 @@ pub async fn create_repo(repocontroller: Data<RwLock<RepoController>>, data: Dat
         return e;
     }
 
+
+    Json(Reply::Failed)
+}
+
+#[get("/repo/delete")]
+pub async fn delete_repo(controller: Data<RwLock<RepoController>>, data: Data<Connection>, request: Json<RequestRepository>) -> Json<Reply<()>> {
+    let res = handle_auth_request(&data, request.token);
+    if let Ok(handle) = res {
+        if let Some(repo_name) = &request.repo_name {
+            let res = database::get_user_repo_permission(&data, handle.user_id, repo_name.clone());
+            if handle.admin {
+                // Will have access, irrelevant of what
+            } else if let Some(acc) = res {
+                if let AccessType::Owner = acc {
+                    // Only owner can delete, maybe add All in the future?
+                } else {
+                    return Json(Reply::Denied { token: handle.token });
+                }
+            } else if let None = res {
+                // Check if exists to send correct responds
+                let res = database::get_repo(&data, repo_name.clone());
+                if let Some(_) = res {
+                    return Json(Reply::Denied { token: handle.token });
+                } else {
+                    return Json(Reply::NotFound { token: handle.token });
+                }
+            }
+
+            if database::delete_repo(&data, repo_name.clone()) {
+                let mut controller = controller.write().await;
+                if controller.delete_repo(repo_name) {
+                    return Json(Reply::Ok { value: (), token: handle.token });
+                } else {
+                    // Undo deletion out of DB
+                    controller.reload_folder(&data);
+                    return Json(Reply::Error { token: handle.token });
+                }
+            } else {
+                return Json(Reply::Error { token: handle.token });
+            }
+        } else {
+            return Json(Reply::MissingParameter { token: handle.token });
+        }
+    } else if let Err(e) = res {
+        return e;
+    }
 
     Json(Reply::Failed)
 }
@@ -455,6 +522,70 @@ pub async fn set_repo_access(data: Data<Connection>, request: Json<RepositoryAcc
         return e;
     }
 
+
+    Json(Reply::Failed)
+}
+
+#[get("/repo/branch/list")]
+pub async fn list_branches(controller: Data<RwLock<RepoController>>, data: Data<Connection>, request: Json<RequestRepository>) -> Json<Reply<Vec<Branch>>> {
+    let res = handle_auth_request(&data, request.token);
+    if let Ok(handle) = res {
+        if let Some(repo_name) = &request.repo_name {
+            //Checking for access
+            let res = database::get_user_repo_permission(&data, handle.user_id, repo_name.clone());
+            if handle.admin {
+                // Will have access, irrelevant of what
+            } else if let Some(acc) = res {
+                if let AccessType::No = acc {
+                    return Json(Reply::Denied { token: handle.token });
+                }
+            } else if let None = res {
+                // Check if exists to send correct responds
+                let res = database::get_repo(&data, repo_name.clone());
+                if let Some(_) = res {
+                    return Json(Reply::Denied { token: handle.token });
+                } else {
+                    return Json(Reply::NotFound { token: handle.token });
+                }
+            }
+
+            // Getting the repo
+            let controller = controller.read().await;
+            let res = controller.get_repo(repo_name);
+            if let Some(repo) = res {
+                let repo = repo.lock().unwrap();
+                let list = repo.get_branches();
+
+                let mut output = Vec::<Branch>::new();
+
+                for item in list {
+                    output.push(
+                        Branch { name: item.get_name().clone(), last_commit: item.get_previous_commit() }
+                    );
+                }
+                
+                return Json(Reply::Ok { value: output, token: handle.token });
+            } else {
+                return Json(Reply::NotFound { token: handle.token });
+            }
+        } else {
+            return Json(Reply::MissingParameter { token: handle.token });
+        }
+    } else if let Err(e) = res {
+        return e;
+    }
+
+    Json(Reply::Failed)
+}
+
+#[get("/placeholder")]
+pub async fn placeholder(data: Data<Connection>, request: Json<RequestRepository>) -> Json<Reply<()>> {
+    let res = handle_auth_request(&data, request.token);
+    if let Ok(_handle) = res {
+
+    } else if let Err(e) = res {
+        return e;
+    }
 
     Json(Reply::Failed)
 }

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::U256;
+use crate::{U256, U232};
 
 pub trait CastToRequest<T> {
     fn as_request(& self) -> T;
@@ -209,4 +209,10 @@ pub struct RepositoryAccess {
     pub repo_name: String,
     pub user_id: u32,
     pub permission: AccessType
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Branch {
+    pub name: String,
+    pub last_commit: U232
 }
