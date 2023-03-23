@@ -216,3 +216,23 @@ pub struct Branch {
     pub name: String,
     pub last_commit: U232
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Folder {
+    pub folder_token: Uuid,
+    pub folder_name: String,
+    pub content: Option<Vec<String>>
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RequestFolder {
+    pub token: Option<Uuid>,
+    pub folder_name: String,
+    pub parent_folder: Option<Uuid>
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UploadFile {
+    pub folder_token: Uuid,
+    pub file_name: String
+}

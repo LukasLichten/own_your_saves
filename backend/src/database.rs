@@ -1,6 +1,6 @@
 use std::{path::{Path, PathBuf}, usize};
 
-use common::{U256, LargeU, data::{RequestUser, Device, TokenCarrier, User, AccessType, Repository, RequestRepository}};
+use common::{U256, LargeU, data::{RequestUser, Device, TokenCarrier, User, AccessType, Repository, RequestRepository, Folder}};
 use rusqlite::{Connection, params};
 use uuid::Uuid;
 
@@ -115,14 +115,26 @@ pub fn init_sql() -> Connection {
                 FOREIGN KEY (user_id) REFERENCES users(user_id),
                 FOREIGN KEY (repo_name) REFERENCES repository(repo_name)
             );
-            
+            CREATE TABLE temp_folder(
+                folder_token BLOB PRIMARY KEY,
+                folder_name TEXT,
+                creation_time INTEGER DEFAULT (strftime('%s','now'))
+            );
+            CREATE TABLE temp_folder_reference(
+                parent_token BLOB,
+                sub_token BLOB,
+
+                PRIMARY KEY (parent_token, sub_token),
+                FOREIGN KEY (parent_token) REFERENCES temp_folder(folder_token)
+                FOREIGN KEY (sub_token) REFERENCES temp_folder(folder_token)
+            );
                 ").as_str()
         );
 
         error_handle(res);
     }
     
-
+    
     
 
     connection
@@ -566,6 +578,84 @@ pub fn set_user_repo_permission(conn: &Connection, user_id: u32, repo_name: Stri
 
 
     false
+}
+
+pub fn create_temp_folder(conn: &Connection, name: String) -> Folder {
+    let key = Uuid::new_v4();
+    let res = conn.execute("INSERT INTO temp_folder(folder_token, folder_name) VALUES (?1, ?2)", (&key, &name));
+
+    if let Ok(rows) = res {
+        if rows == 0 {
+            return create_temp_folder(conn, name);
+        }
+
+        return Folder{ folder_token: key, folder_name: name, content: None };
+    }
+
+
+    create_temp_folder(conn, name)
+}
+
+pub fn link_temp_parent_folder(conn: &Connection, parent: Uuid, sub: Uuid) -> bool {
+    let res = conn.execute("INSERT INTO temp_folder_reference(parent_token, sub_token) VALUES (?1, ?2)", (&parent, &sub));
+    if let Ok(rows) = res {
+        if rows != 0 {
+            return true;
+        }
+    }
+
+    false
+}
+
+pub fn get_temp_folder(conn: &Connection, folder_token: Uuid) -> Option<Folder> {
+    let res = conn.query_row(format!(
+        "SELECT folder_token, folder_name FROM temp_folder WHERE folder_token=x'{}'", TokenCarrier::new_token(folder_token).token_as_hex_string()).as_str(), params![], 
+        |row| Ok(Folder {folder_token: row.get(0)?, folder_name: row.get(1)?, content: None}));
+
+    if let Ok(folder) = res {
+        return Some(folder);
+    }
+
+    None
+}
+
+pub fn delete_temp_folder(conn: &Connection, folder_token: Uuid) -> bool {
+    let sub_folders = get_sub_folders(conn, folder_token);
+    for item in sub_folders {
+        if !delete_temp_folder(conn, item.folder_token) {
+            return false;
+        }
+    }
+
+    let res = conn.execute_batch(format!(
+        "DELETE FROM temp_folder_reference WHERE parent_token=x'{0}' OR sub_token=x'{0}'; DELETE FROM temp_folder WHERE folder_token=x'{0}'", TokenCarrier::new_token(folder_token).token_as_hex_string()).as_str());
+
+    if let Ok(_) = res {
+        return true;
+    }
+
+    false
+}
+
+pub fn get_sub_folders(conn: &Connection, folder_token: Uuid) -> Vec<Folder> {
+    let res = conn.prepare(format!("SELECT folder_token, folder_name FROM temp_folder JOIN
+            (SELECT * FROM temp_folder_reference WHERE parent_token=x'{}') as ref ON ref.sub_folder = temp_folder.folder_token",TokenCarrier::new_token(folder_token).token_as_hex_string()).as_str());
+
+    let mut data = Vec::<Folder>::new();
+
+    if let Ok(mut stmt) = res {
+        let repo_iter = stmt.query_map([], |row| {
+            Ok(Folder { folder_token: row.get(0)?, folder_name: row.get(1)?, content: None})
+        }).unwrap();
+        
+        for item in repo_iter {
+            if let Ok(sub) = item {
+                data.push(sub);
+            }
+        }
+    }
+
+    data
 }
 
 

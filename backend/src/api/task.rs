@@ -1,9 +1,9 @@
-use actix_web::{get, post, web::{Data, Json}, HttpResponse, HttpRequest};
-use actix_web_lab::__reexports::tokio::sync::RwLock;
-use common::data::{RequestUser, User, TokenCarrier, RequestDevice, Reply, Device, RequestRepository, Repository, AccessType, RepositoryAccess, Branch};
+use actix_web::{get, post, web::{Data, Json, Payload, Path}, HttpResponse, HttpRequest};
+use actix_web_lab::__reexports::{tokio::sync::RwLock, futures_util::StreamExt};
+use common::data::{RequestUser, User, TokenCarrier, RequestDevice, Reply, Device, RequestRepository, Repository, AccessType, RepositoryAccess, Branch, Folder, RequestFolder, UploadFile};
 use rusqlite::Connection;
 use uuid::Uuid;
-use crate::{database::{self, AuthHandle}, file_processing::RepoController};
+use crate::{database::{self, AuthHandle}, file_processing::{RepoController, self}};
 
 #[get("/ping")]
 pub async fn get_ping() -> Json<String> {
@@ -576,6 +576,50 @@ pub async fn list_branches(controller: Data<RwLock<RepoController>>, data: Data<
     }
 
     Json(Reply::Failed)
+}
+
+#[get("/upload/folder")]
+pub async fn upload_folder(data: Data<Connection>, request: Json<RequestFolder>) -> Json<Reply<Folder>> {
+    let res = handle_auth_request(&data, request.token);
+    if let Ok(handle) = res {
+        let folder = database::create_temp_folder(&data, request.folder_name.clone());
+        if file_processing::create_temp_folder(&data, folder.folder_token) {
+            if let Some(parent) = request.parent_folder {
+                database::link_temp_parent_folder(&data, parent, folder.folder_token);
+            }
+
+            return Json(Reply::Ok { value: folder, token: handle.token });
+        } else {
+            return Json(Reply::Error { token: handle.token });
+        }
+    } else if let Err(e) = res {
+        return e;
+    }
+
+    Json(Reply::Failed)
+}
+
+#[post("/upload/file/{folder_token}/{file_name}")]
+pub async fn upload_file(data: Data<Connection>, mut body: Payload, target: Path<UploadFile>) -> HttpResponse {
+    let res = file_processing::get_temp_folder_path(&data, target.folder_token);
+        if let Some(mut path) = res {
+            let mut data = Vec::<u8>::new();
+
+        while let Some(item) = body.next().await {
+            if let Ok(item) = item {
+                for by in item {
+                    data.push(by);
+                }
+            }
+        }
+
+        path.push(target.file_name.clone());
+        if let Ok(_) = file_processing::io::write_bytes(path.as_path(), data) {
+            return HttpResponse::Ok().finish()
+        }
+    }
+
+    HttpResponse::NotFound().finish()
 }
 
 #[get("/placeholder")]

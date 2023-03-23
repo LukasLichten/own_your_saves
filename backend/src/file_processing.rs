@@ -2,11 +2,14 @@ use std::{path::PathBuf, collections::HashMap, sync::Mutex};
 
 use repository::StorageRepo;
 use rusqlite::Connection;
+use uuid::Uuid;
 
 use crate::database;
 
 pub mod io;
 pub mod repository;
+
+const KEY_TEMP_FOLDER:&str = "temp_folder";
 
 pub struct RepoController {
     root_path: String,
@@ -33,6 +36,32 @@ pub fn init(db: &Connection) -> RepoController {
     };
 
     con.reload_folder(db);
+
+    // Temp folder handling
+    let temp_folder = PathBuf::from(if let Ok(temp_folder) = std::env::var("TEMP_PATH") {
+        database::set_key_value(&db, KEY_TEMP_FOLDER.to_string(), temp_folder.clone());
+        temp_folder
+    } else if let Some(temp_folder) = database::get_key_value(&db, KEY_TEMP_FOLDER.to_string()) {
+        temp_folder
+    } else {
+        // Setting default value
+        let val = "./target/temp/".to_string();
+        database::set_key_value(&db, KEY_TEMP_FOLDER.to_string(), val.clone());
+        val
+    });
+    
+    if temp_folder.is_file() {
+        panic!("Temp Folder path points to a file: {}",temp_folder.to_str().unwrap());        
+    } else if !temp_folder.exists() {
+        if let Err(e) = io::create_folder(temp_folder.as_path()) {
+            panic!("Unable to create temp folder at:{} \n Error code: {}", temp_folder.to_str().unwrap(), e.to_string())
+        }
+
+        let res = db.execute_batch("DELETE FROM temp_folder_reference; DELETE FROM temp_folder;");
+        if let Err(e) = res {
+            panic!("Unable to clear out temp data from the database: {}", e.to_string());
+        }
+    }
 
     con
 }
@@ -108,4 +137,53 @@ impl RepoController {
     pub fn get_repo(& self, name: &String) -> Option<&Mutex<StorageRepo>> {
         self.repos.get(name)
     }
+}
+
+pub fn create_temp_folder(db: &Connection, folder_token: Uuid) -> bool {
+    let root = database::get_key_value(db, KEY_TEMP_FOLDER.to_string());
+    if let Some(root) = root {
+        let mut path = PathBuf::from(root);
+        path.push(folder_token.to_string());
+
+        if path.exists() {
+            // This should not happen, someone did not clean up, deleting folder
+            if let Err(_e) = io::delete_folder(path.as_path()) {
+                return false;
+            }
+        }
+
+        if let Ok(_) = io::create_folder(path.as_path()) {
+            return true;
+        }
+    }
+
+
+    false
+}
+
+pub fn delete_temp_folder(db: &Connection, folder_token: Uuid) -> bool {
+    let root = database::get_key_value(db, KEY_TEMP_FOLDER.to_string());
+    if let Some(root) = root {
+        let mut path = PathBuf::from(root);
+        path.push(folder_token.to_string());
+
+        if let Ok(_) = io::delete_folder(path.as_path()) {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn get_temp_folder_path(db: &Connection, folder_token: Uuid) -> Option<PathBuf> {
+    let root = database::get_key_value(db, KEY_TEMP_FOLDER.to_string());
+    if let Some(root) = root {
+        let mut path = PathBuf::from(root);
+        path.push(folder_token.to_string());
+
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
 }
