@@ -1,13 +1,14 @@
 use std::{path::PathBuf, collections::HashMap, sync::Mutex};
 
-use repository::StorageRepo;
+use storage::StorageRepo;
 use rusqlite::Connection;
 use uuid::Uuid;
 
 use crate::database;
 
 pub mod io;
-pub mod repository;
+pub mod storage;
+pub mod repository_file;
 
 const KEY_TEMP_FOLDER:&str = "temp_folder";
 
@@ -73,7 +74,7 @@ impl RepoController {
         self.repos.clear();
         let mut list = database::list_repos(&db, None);
         for folder in dir {
-            let res = repository::read_storage_info(folder.as_path());
+            let res = storage::read_storage_info(folder.as_path());
             if let Ok(rep) = res {
                 let name = folder.file_name().unwrap().to_str().unwrap().to_string(); // TODO maybe do this better
 
@@ -108,7 +109,7 @@ impl RepoController {
         let mut path = PathBuf::from(&self.root_path);
         path.push(&name);
 
-        let res = repository::new_repo(path.as_path(), name.clone());
+        let res = storage::new_repo(path.as_path(), name.clone());
         if let Ok(repo) = res {
             self.repos.insert(name, Mutex::new(repo));
             return true;
