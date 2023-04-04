@@ -77,6 +77,32 @@ pub fn delete_folder(folder_path: &Path) -> io::Result<()> {
     fs::remove_dir_all(folder_path)
 }
 
+pub fn copy_folder(from: &Path, to: &Path) -> io::Result<()> {
+    create_folder(to)?;
+
+    let target = PathBuf::from(to);
+
+    let content = get_folder_content(from);
+    for item in content {
+        let name = item.file_name().unwrap();
+        let mut target = target.clone();
+        target.push(name);
+
+        if item.is_file() {
+            copy_file(item.as_path(), target.as_path())?;
+        } else {
+            // Recursively iterating over the folders
+            copy_folder(item.as_path(), target.as_path())?;
+        }
+    }
+
+    Ok(())
+}
+
+pub fn copy_file(from: &Path, to: &Path) -> io::Result<u64> {
+    fs::copy(from, to)
+}
+
 pub fn hash_file(file_name: &Path) -> io::Result<U232> {
     let res = read_bytes(file_name);
 

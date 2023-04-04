@@ -125,7 +125,7 @@ pub fn init_sql() -> Connection {
                 sub_token BLOB,
 
                 PRIMARY KEY (parent_token, sub_token),
-                FOREIGN KEY (parent_token) REFERENCES temp_folder(folder_token)
+                FOREIGN KEY (parent_token) REFERENCES temp_folder(folder_token),
                 FOREIGN KEY (sub_token) REFERENCES temp_folder(folder_token)
             );
                 ").as_str()
@@ -639,7 +639,7 @@ pub fn delete_temp_folder(conn: &Connection, folder_token: Uuid) -> bool {
 
 pub fn get_sub_folders(conn: &Connection, folder_token: Uuid) -> Vec<Folder> {
     let res = conn.prepare(format!("SELECT folder_token, folder_name FROM temp_folder JOIN
-            (SELECT * FROM temp_folder_reference WHERE parent_token=x'{}') as ref ON ref.sub_folder = temp_folder.folder_token",TokenCarrier::new_token(folder_token).token_as_hex_string()).as_str());
+            (SELECT * FROM temp_folder_reference WHERE parent_token=x'{}') as ref ON ref.sub_token = temp_folder.folder_token",TokenCarrier::new_token(folder_token).token_as_hex_string()).as_str());
 
     let mut data = Vec::<Folder>::new();
 

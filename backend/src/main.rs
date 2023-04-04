@@ -47,6 +47,13 @@ async fn main() -> std::io::Result<()> {
                 .service(task::set_repo_access)
                 .service(task::list_branches)
 
+                .service(task::upload_folder)
+                .service(task::upload_file)
+                .service(task::merge_folders)
+
+                .service(task::get_download_folder)
+                .service(task::download)
+                .service(task::clear_temp_folder)
 
                 .service(task::get_test)
         )

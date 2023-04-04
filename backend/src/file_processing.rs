@@ -50,6 +50,8 @@ pub fn init(db: &Connection) -> RepoController {
         database::set_key_value(&db, KEY_TEMP_FOLDER.to_string(), val.clone());
         val
     });
+
+    // TODO temp folder clean up (remove folders from DB if they no longer exist and vice versa)
     
     if temp_folder.is_file() {
         panic!("Temp Folder path points to a file: {}",temp_folder.to_str().unwrap());        
@@ -187,4 +189,55 @@ pub fn get_temp_folder_path(db: &Connection, folder_token: Uuid) -> Option<PathB
     }
 
     None
+}
+
+pub fn list_temp_folder_content(db: &Connection, folder_token: Uuid) -> Option<Vec<String>> {
+    fn recursive_folder(folder: PathBuf) -> Vec<String> {
+        let mut content = Vec::<String>::new();
+
+        let res = io::get_folder_content(folder.as_path());
+        for item in res {
+            let name = item.file_name().expect("Somehow, file path does not contain a filename").to_str().expect("And an OSstring somehow isn't a str").to_string();
+
+            if item.is_file() {
+                content.push(name);
+            } else {
+                // Recursively dealing with a folder
+                content.push(name.clone()); // folder is added too
+
+                for sub_item in recursive_folder(item){
+                    content.push(name.clone() + "/" + sub_item.as_str());
+                }
+            }
+        }
+
+        content
+    }
+    
+    let root = database::get_key_value(db, KEY_TEMP_FOLDER.to_string());
+    if let Some(root) = root {
+        let mut path = PathBuf::from(root);
+        path.push(folder_token.to_string());
+
+        let content = recursive_folder(path);
+
+        return Some(content);
+    }
+    None
+}
+
+pub fn merge_temp_folder_into(db: &Connection, from_token: Uuid, target_token: Uuid, folder_name: String) -> bool {
+    if let Some(from) = get_temp_folder_path(db, from_token) {
+        if let Some(mut to) = get_temp_folder_path(db, target_token) {
+            to.push(folder_name);
+
+            if io::copy_folder(from.as_path(), to.as_path()).is_err() {
+                return false;
+            }
+
+            return delete_temp_folder(db, from_token);
+        }
+    }
+
+    false
 }

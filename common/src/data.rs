@@ -227,12 +227,13 @@ pub struct Folder {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RequestFolder {
     pub token: Option<Uuid>,
-    pub folder_name: String,
-    pub parent_folder: Option<Uuid>
+    pub folder_name: Option<String>,
+    pub parent_folder: Option<Uuid>,
+    pub folder_token: Option<Uuid>
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UploadFile {
     pub folder_token: Uuid,
-    pub file_name: String
+    pub path: String
 }
