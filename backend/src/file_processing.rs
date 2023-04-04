@@ -1,4 +1,4 @@
-use std::{path::PathBuf, collections::HashMap, sync::Mutex};
+use std::{path::PathBuf, collections::HashMap, sync::Mutex, str::FromStr};
 
 use storage::StorageRepo;
 use rusqlite::Connection;
@@ -50,8 +50,6 @@ pub fn init(db: &Connection) -> RepoController {
         database::set_key_value(&db, KEY_TEMP_FOLDER.to_string(), val.clone());
         val
     });
-
-    // TODO temp folder clean up (remove folders from DB if they no longer exist and vice versa)
     
     if temp_folder.is_file() {
         panic!("Temp Folder path points to a file: {}",temp_folder.to_str().unwrap());        
@@ -64,6 +62,11 @@ pub fn init(db: &Connection) -> RepoController {
         if let Err(e) = res {
             panic!("Unable to clear out temp data from the database: {}", e.to_string());
         }
+    }
+
+    // Pruning the temp folder, in case some got deleted and the like
+    if !prune_temp_folders(db) {
+        panic!("Something went wrong when cleaning out the temp folder");
     }
 
     con
@@ -237,6 +240,39 @@ pub fn merge_temp_folder_into(db: &Connection, from_token: Uuid, target_token: U
 
             return delete_temp_folder(db, from_token);
         }
+    }
+
+    false
+}
+
+pub fn prune_temp_folders(db: &Connection) -> bool {
+    let root = database::get_key_value(db, KEY_TEMP_FOLDER.to_string());
+    if let Some(root) = root {
+        let path = PathBuf::from(root);
+
+        // We first find all the folders
+        let mut folders = Vec::<Uuid>::new();
+        for item in io::get_folder_content(path.as_path()) {
+            let name = item.file_name().expect("content in a folder does not have name, somehow").to_str().expect("An OSstring is somehow not a str");
+            
+            if let Ok(id) = Uuid::from_str(name) {
+                folders.push(id);
+            }
+        }
+
+        let to_be_deleted = database::prune_temp_folders(db, folders);
+
+        for item in to_be_deleted {
+            let mut target = path.clone();
+            target.push(item.to_string());
+
+            if let Err(_) = io::delete_folder(target.as_path()) {
+                return false;
+            }
+        }
+
+
+        return true;
     }
 
     false

@@ -658,6 +658,58 @@ pub fn get_sub_folders(conn: &Connection, folder_token: Uuid) -> Vec<Folder> {
     data
 }
 
+// To be called by file_processing::prune_temp_folders
+pub fn prune_temp_folders(conn: &Connection, existing_folders: Vec<Uuid>) -> Vec<Uuid> {
+    let mut folders_to_delete = Vec::<Uuid>::new();
+
+    // Getting all the folder references
+    let res = conn.prepare("SELECT folder_token, folder_name FROM temp_folder"); // TODO pruning of old temp folders (we have age already)
+    if let Ok(mut stmt) = res {
+        let mut db_folders = Vec::<Uuid>::new();
+        let repo_iter = stmt.query_map([], |row| {
+            Ok(Folder { folder_token: row.get(0)?, folder_name: row.get(1)?, content: None})
+        }).unwrap();
+        
+        for item in repo_iter {
+            if let Ok(sub) = item {
+                db_folders.push(sub.folder_token);
+            }
+        }
+
+        // iterating over the folders
+        for folder in existing_folders {
+            //Finding the uuid in the db folder references
+            let mut equal = None;
+
+            for i in 0..db_folders.len() {
+                let item = &db_folders[i];
+                if item == &folder {
+                    equal = Some(i);
+                    break;
+                }
+            }
+
+            if let Some(index) = equal {
+                // We remove it from db_folders to later clean up those not removed
+                db_folders.remove(index);
+            } else {
+                // Not found, dangling folder, add to the to_delete
+                folders_to_delete.push(folder);
+            }
+        }
+
+        // Now, everything that remains in db_folders is dangling references, and we clean those up
+        for item in db_folders {
+            delete_temp_folder(conn, item);
+            // Technically this can delete valid existing folder references due to them being subfolders of a dangling reference
+            // These Referencesless folders would be cleaned up on another run
+            // Lets just for now leave the dead folders there
+        }
+    }
+
+    folders_to_delete
+}
+
 
 fn migrate_db(_conn: &Connection, curr_version:usize) {
     // fn error_handle<T>(res: Result<T,rusqlite::Error>) {
