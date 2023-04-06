@@ -3,7 +3,7 @@ pub mod api;
 pub mod database;
 
 
-use api::task;
+use api::{task, repo, transfer, user};
 
 use actix_web::{HttpServer, App, web::{Data, scope}, middleware::Logger};
 use actix_web_lab::{web::spa, __reexports::tokio::sync::RwLock};
@@ -31,30 +31,30 @@ async fn main() -> std::io::Result<()> {
         .service(
             scope("/api")
                 .service(task::get_ping)
-                .service(task::login)
-                .service(task::auth)
-                .service(task::create_new_user)
-                .service(task::get_user)
-                .service(task::delete_user)
-                .service(task::get_device)
-                .service(task::create_device)
-                .service(task::delete_device)
+                .service(user::login)
+                .service(user::auth)
+                .service(user::create_new_user)
+                .service(user::get_user)
+                .service(user::delete_user)
+                .service(user::get_device)
+                .service(user::create_device)
+                .service(user::delete_device)
                 
-                .service(task::get_repo)
-                .service(task::list_repo)
-                .service(task::create_repo)
-                .service(task::delete_repo)
-                .service(task::set_repo_access)
-                .service(task::list_branches)
-                .service(task::create_commit)
+                .service(repo::get_repo)
+                .service(repo::list_repo)
+                .service(repo::create_repo)
+                .service(repo::delete_repo)
+                .service(repo::set_repo_access)
+                .service(repo::list_branches)
+                .service(repo::create_commit)
 
-                .service(task::upload_folder)
-                .service(task::upload_file)
-                .service(task::merge_folders)
+                .service(transfer::upload_folder)
+                .service(transfer::upload_file)
+                .service(transfer::merge_folders)
 
-                .service(task::get_download_folder)
-                .service(task::download)
-                .service(task::clear_temp_folder)
+                .service(transfer::get_download_folder)
+                .service(transfer::download)
+                .service(transfer::clear_temp_folder)
 
                 .service(task::get_test)
         )
