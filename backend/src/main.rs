@@ -46,6 +46,7 @@ async fn main() -> std::io::Result<()> {
                 .service(task::delete_repo)
                 .service(task::set_repo_access)
                 .service(task::list_branches)
+                .service(task::create_commit)
 
                 .service(task::upload_folder)
                 .service(task::upload_file)

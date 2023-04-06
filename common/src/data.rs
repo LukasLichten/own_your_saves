@@ -185,6 +185,18 @@ impl AccessType {
         true
     }
 
+    pub fn is_write_allowed(& self) -> bool {
+        if !self.is_read_allowed() {
+            return false; // If not even read is allowed, the write won't be
+        }
+
+        if let AccessType::Read = self {
+            return false; 
+        }
+
+        true
+    }
+
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -236,4 +248,12 @@ pub struct RequestFolder {
 pub struct UploadFile {
     pub folder_token: Uuid,
     pub path: String
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CreateCommit {
+    pub token: Option<Uuid>,
+    pub folder_token: Uuid,
+    pub repo_name: String,
+    pub previos_commit: U232
 }

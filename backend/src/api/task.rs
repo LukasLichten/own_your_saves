@@ -1,6 +1,6 @@
 use actix_web::{get, post, web::{Data, Json, Payload, Path}, HttpResponse, HttpRequest};
 use actix_web_lab::__reexports::{tokio::sync::RwLock, futures_util::StreamExt};
-use common::data::{RequestUser, User, TokenCarrier, RequestDevice, Reply, Device, RequestRepository, Repository, AccessType, RepositoryAccess, Branch, Folder, RequestFolder, UploadFile};
+use common::{data::{RequestUser, User, TokenCarrier, RequestDevice, Reply, Device, RequestRepository, Repository, AccessType, RepositoryAccess, Branch, Folder, RequestFolder, UploadFile, CreateCommit}, U232, LargeU};
 use rusqlite::Connection;
 use uuid::Uuid;
 use crate::{database::{self, AuthHandle}, file_processing::{RepoController, self}};
@@ -570,6 +570,87 @@ pub async fn list_branches(controller: Data<RwLock<RepoController>>, data: Data<
             }
         } else {
             return Json(Reply::MissingParameter { token: handle.token });
+        }
+    } else if let Err(e) = res {
+        return e;
+    }
+
+    Json(Reply::Failed)
+}
+
+#[get("/repo/commit/create")]
+pub async fn create_commit(controller: Data<RwLock<RepoController>>, data: Data<Connection>, request: Json<CreateCommit>) -> Json<Reply<U232>> {
+    let res = handle_auth_request(&data, request.token);
+    if let Ok(handle) = res {
+        if let Some(repo_db) = database::get_repo(&data, request.repo_name.clone()) {
+            // Checking if the user is allowed to push
+            let access = if handle.admin {
+                true
+            } else if let Some(perm) = database::get_user_repo_permission(&data, handle.user_id, repo_db.repo_name.clone()) {
+                perm.is_write_allowed()
+            } else {
+                false
+            };
+
+            if !access {
+                return Json(Reply::Denied { token: handle.token });
+            }
+
+            // Checking for the temp folder
+            if let (Some(folder),Some(path)) = (database::get_temp_folder(&data, request.folder_token), file_processing::get_temp_folder_path(&data, request.folder_token)) {
+                if !database::get_sub_folders(&data, folder.folder_token).is_empty() {
+                    // Folder has not been merged completly, aborting
+                    return Json(Reply::Error { token: handle.token });
+                }
+
+                let conn = controller.read().await;
+                if let Some(repo) = conn.get_repo(&repo_db.repo_name) {
+                    let mut repo = repo.lock().unwrap();
+                    
+                    // Checking for the previous commit
+                    if request.previos_commit != U232::new() {
+                        if let Err(_) = repo.get_commit(request.previos_commit) {
+                            // Previous commit could not be found
+                            drop(repo);
+                            drop(conn);
+                            return Json(Reply::NotFound { token: handle.token });
+                        }
+                    }
+
+                    // TODO handle folder.folder_name (and defining root folder in general)
+                    // TODO adding commit info
+                    // TODO handle single file commits
+                    // TODO finish implementing repo.create_commit function
+                    // Creating the commit
+                    if let Some(commit) = repo.create_commit(request.previos_commit, path.as_path()) { 
+                        drop(repo);
+                        drop(conn);
+
+                        // Cleaning up the temp folder
+                        database::delete_temp_folder(&data, folder.folder_token);
+                        file_processing::delete_temp_folder(&data, folder.folder_token);
+                        // No need to worry about sub folders, as we inforce that there should not be any
+                        // although during execution of this, command some might have been created
+                        // we assume proper usage of the API (high expectations, I know, but this can only be done by the client also running this request, no one else has the folder token)
+
+                        return Json(Reply::Ok { value: commit, token: handle.token });
+                    } else {
+                        // Something went wrong
+                        drop(repo);
+                        drop(conn);
+                        return Json(Reply::Error { token: handle.token });
+                    }
+                } else {
+                    // Somehow the repo was not found
+                    return Json(Reply::NotFound { token: handle.token });
+                }
+
+                
+            } else {
+                return Json(Reply::NotFound { token: handle.token });
+            }
+        } else {
+            return Json(Reply::NotFound { token: handle.token });
         }
     } else if let Err(e) = res {
         return e;
