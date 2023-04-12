@@ -16,34 +16,34 @@ pub async fn upload_folder(data: Data<Connection>, request: Json<RequestFolder>)
                 return Json(Reply::MissingParameter { token: handle.token }); // Can't have empty folder names for subfolders
             }
 
-            name
-        } else if request.parent_folder.is_none() {
-            "".to_string()
-        } else {
-            return Json(Reply::MissingParameter { token: handle.token });
-        };
-
-        // Making sure if it is a subfolder, that it does not have the same name as the others
-        if let Some(parent_token) = request.parent_folder {
-            // Testing against sub folders
-            for item in database::get_sub_folders(&data, parent_token) {
-                if item.folder_name == folder_name {
-                    // We can't have two matching folder names
-                    return Json(Reply::Denied { token: handle.token }); // Technically missusing denied, but this function works with any permissions, so...
+            // Making sure if it is a subfolder, that it does not have the same name as the others
+            if let Some(parent_token) = request.parent_folder {
+                // Testing against sub folders
+                let some_name = Some(name.clone());
+                for item in database::get_sub_folders(&data, parent_token) {
+                    if item.folder_name == some_name {
+                        // We can't have two matching folder names
+                        return Json(Reply::Denied { token: handle.token }); // Technically missusing denied, but this function works with any permissions, so...
+                    }
                 }
-            }
 
-            // Testing against local files
-            if let Some(content) = file_processing::list_temp_folder_content(&data, parent_token) {
-                for item in content {
-                    if item == folder_name {
-                        // Files can not have the same name as a folder
-                        return Json(Reply::Denied { token: handle.token });
+                // Testing against local files
+                if let Some(content) = file_processing::list_temp_folder_content(&data, parent_token) {
+                    for item in content {
+                        if item == name {
+                            // Files can not have the same name as a folder
+                            return Json(Reply::Denied { token: handle.token });
+                        }
                     }
                 }
             }
-        }
-        
+
+            Some(name)
+        } else if request.parent_folder.is_none() {
+            None
+        } else {
+            return Json(Reply::MissingParameter { token: handle.token });
+        };
 
 
         let folder = database::create_temp_folder(&data, folder_name);
@@ -74,9 +74,11 @@ pub async fn upload_file(data: Data<Connection>, mut body: Payload, target: Path
     let res = file_processing::get_temp_folder_path(&data, target.folder_token);
     if let Some(mut path) = res {
         for item in database::get_sub_folders(&data, target.folder_token) {
-            if item.folder_name == target.path {
-                // Can't have a file with the same name as a folder
-                return HttpResponse::Conflict().finish();
+            if let Some(folder_name) = item.folder_name {
+                if folder_name == target.path {
+                    // Can't have a file with the same name as a folder
+                    return HttpResponse::Conflict().finish();
+                }
             }
         }
 
@@ -110,8 +112,15 @@ pub async fn merge_folders(data: Data<Connection>, request: Json<RequestFolder>)
                 // Processes all the subfolders of this one
                 recursive_folder_merger(data, item.folder_token)?;
 
+                // Getting the folder_name
+                let folder_name = if let Some(name) = item.folder_name {
+                    name
+                } else {
+                    return Err(()); // This should not happen, as subfolders require a folder_name to be set on creation
+                };
+
                 // Now that it is complete, we will merge it into here
-                if !file_processing::merge_temp_folder_into(data, item.folder_token, folder_token, item.folder_name) {
+                if !file_processing::merge_temp_folder_into(data, item.folder_token, folder_token, folder_name) {
                     return Err(()); // something went wrong in merging
                 }
 

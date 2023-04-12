@@ -79,6 +79,28 @@ impl U232 {
     pub fn set_inequailty_byte(&mut self, byte:u8) {
         self.set_byte(0, byte);
     }
+
+    pub fn equal_224(& self, other: &Self) -> bool {
+        for i in 1..Self::NUM_OF_BYTES {
+            if self.bytes[i] != other.bytes[i] {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+#[test]
+fn test_equal_224() {
+    let base = U232::new(); 
+    assert!(base.equal_224(&base));
+    assert!(base == base);
+
+    let mut comp = base.clone();
+    comp.set_inequailty_byte(0x05);
+    assert!(base.equal_224(&comp));
+    assert!(base != comp);
 }
 
 impl LargeU<U232> for U232 {

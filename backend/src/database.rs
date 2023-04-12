@@ -580,7 +580,7 @@ pub fn set_user_repo_permission(conn: &Connection, user_id: u32, repo_name: Stri
     false
 }
 
-pub fn create_temp_folder(conn: &Connection, name: String) -> Folder {
+pub fn create_temp_folder(conn: &Connection, name: Option<String>) -> Folder {
     let key = Uuid::new_v4();
     let res = conn.execute("INSERT INTO temp_folder(folder_token, folder_name) VALUES (?1, ?2)", (&key, &name));
 

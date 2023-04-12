@@ -1,6 +1,8 @@
 use std::{path::{Path, PathBuf}, collections::HashMap, sync::{Mutex, MutexGuard}};
-use super::{io, repository_file::{self, RepoFileType, RepoFile, Head, Instruction, Operation}};
+use super::{io, repository_file::{self, RepoFileType, RepoFile, Head, CommitInfo}};
 use common::{U232,LargeU};
+
+mod commit_generation;
 
 pub fn read_storage_info(folder: &Path) -> std::io::Result<StorageRepo>{
     let mut file = PathBuf::from(folder);
@@ -127,6 +129,91 @@ impl StorageRepo {
             std::io::ErrorKind::Other,
             "Failed to read File",
         ))
+    }
+
+    pub fn get_commit_info(&mut self, commit_id: U232) -> Option<CommitInfo> {
+        let history = self.get_commit_chain(commit_id);
+        if history.is_empty() {
+            return None;
+        }
+
+        let mut time = 0;
+        for item in history.iter().rev() {
+            let loc = item.lock().unwrap();
+            if let RepoFileType::CommitInfo(info) = loc.get_type(0x10) {
+                if let RepoFileType::NewFile = loc.get_type(0x03) {
+                    time = 0;
+                } else if let RepoFileType::NewFolder(_) = loc.get_type(0x0D) {
+                    time = 0;
+                }
+
+                time += info.get_timestamp();
+            }
+            drop(loc);
+        }
+
+        let item = history[0].lock().unwrap();
+        if let RepoFileType::CommitInfo(info) = item.get_type(0x10) {
+            let i = CommitInfo::new(info.get_user(), info.get_device(), info.get_text(), time);
+            drop(item);
+            return Some(i);
+        }
+
+
+        None
+    }
+
+    pub fn set_commit_info(&mut self, commit_id: U232, info: CommitInfo) -> bool {
+        let history = self.get_commit_chain(commit_id);
+        if history.is_empty() {
+            return false;
+        }
+
+        let item = history[0].clone(); // TODO make sure setting commit info actually works and doesn't update the first one
+
+        let mut time = 0;
+        for item in history.iter().rev() {
+            let loc = item.lock().unwrap();
+            if let RepoFileType::CommitInfo(info) = loc.get_type(0x10) {
+                if let RepoFileType::NewFile = loc.get_type(0x03) {
+                    time = 0;
+                } else if let RepoFileType::NewFolder(_) = loc.get_type(0x0D) {
+                    time = 0;
+                }
+
+                time += info.get_timestamp();
+            }
+            drop(loc);
+        }
+
+        time = info.get_timestamp().saturating_sub(time); // In case the time is lower we assume set it to be the same as the previous commit
+
+        let info = CommitInfo::new(info.get_user(), info.get_device(), info.get_text(), time);
+
+        let item = item.lock().unwrap();
+        let mut content = item.get_content().clone();
+        let mut index = 0;
+        
+        // Removing the old CommitInfo, if present
+        for ele in content.iter() {
+            if let RepoFileType::CommitInfo(_) = ele {
+                break;
+            }
+
+            index += 1;
+        }
+        if index != content.len() {
+            content.remove(index);
+        }
+
+        // Adding the new commitInfo and overwriting the old repofile
+        content.push(RepoFileType::CommitInfo(info));
+        let new_item = item.clone_with_content(content);
+        drop(item);
+        self.insert_commit(Mutex::new(new_item));
+
+
+        true
     }
 
     fn insert_commit(&mut self, commit: Mutex<RepoFile>) -> U232 {
@@ -303,55 +390,274 @@ impl StorageRepo {
         true
     }
 
-    pub fn create_commit(&mut self, prev_commit_id: U232, location: &Path) -> Option<U232> {
-        if !location.exists() {
-            if prev_commit_id == U232::new() {
-                // Nothing to commit, exiting
-                return None;
+    pub fn create_commit(&mut self, prev_commit_id: Option<U232>, location: &Path, is_root: bool) -> Option<U232> {
+        let prev_commit_id = if let Some(prev) = prev_commit_id {
+            if prev == U232::new() {
+                None
             } else {
-                // Deleting what existed
-                let repo = RepoFile::new(
-                    0,
-                    common::bytes_to_hex_string(self.get_free_commit_id_for_delete(&prev_commit_id).to_be_bytes()),
-                    vec![RepoFileType::Delete; 1],
-                    prev_commit_id,
-                    U232::new()
-            );
-
-                return Some(self.insert_commit(Mutex::new(repo)));
-            }
-        }
-
-        if let Ok(repo_file) = self.get_commit(prev_commit_id){
-
-            let res  = { 
-                let repo_file = repo_file.lock().unwrap();
-                repo_file.get_type(0x0F).clone()
-            };
-
-            if let RepoFileType::Folder(_files) = res {
-                if location.is_dir() {
-                    return self.create_folder_commit(Some(prev_commit_id), location);
-                } else {
-                    // TODO
+                if self.get_commit(prev).is_err() {
+                    return None;
                 }
-            } else {
-                return self.create_file_commit(Some(prev_commit_id), location);
+                Some(prev)
             }
         } else {
-            // No previous commit
-            if location.is_dir() {
-                return self.create_folder_commit(None, location);
-            } else if location.is_file() {
-                return self.create_file_commit(None, location);
+            None
+        };
+
+        // TODO fix why it recreates the file from scratch
+
+        if !location.exists() {
+            if let Some(prev) = prev_commit_id {
+                return Some(self.create_delete_commit(prev));
+            } else {
+                // Nothing to commit, exiting
+                return None;
             }
         }
 
-        None
+        if location.is_file() {
+            return self.create_file_commit(prev_commit_id, location);
+        }
+
+        //TODO rewrite merger to move files into a folder if named
+        //TODO check if build can build folders with empty names
+        
+        return self.create_folder_commit(prev_commit_id, location, is_root);
     }
 
-    fn create_folder_commit(&mut self, prev_commit: Option<U232>, location: &Path) -> Option<U232> {
-        None
+    fn create_delete_commit(&mut self, prev_commit_id: U232) -> U232 {
+        // Deleting what existed
+        let repo = RepoFile::new(
+            0,
+            common::bytes_to_hex_string(self.get_free_commit_id_for_delete(&prev_commit_id).to_be_bytes()),
+            vec![RepoFileType::Delete; 1],
+            prev_commit_id,
+            U232::new()
+        );
+
+        return self.insert_commit(Mutex::new(repo));
+    }
+
+    fn create_folder_commit(&mut self, prev_commit: Option<U232>, location: &Path, is_root: bool) -> Option<U232> {
+        // TODO check if the folder exists
+        
+
+        let name = location.file_name().expect("Path does not contain folder name, somehow").to_str().expect("a os string is not a str, somehow").to_string();
+
+        let mut commits = Vec::<U232>::new();
+        let mut appended = Vec::<u8>::new();
+        let mut repo_file_type = Vec::<RepoFileType>::new();
+        let mut final_prev_commit = U232::new();
+
+
+
+        if let Some(prev_commit) = prev_commit {
+            final_prev_commit = prev_commit.clone();
+
+            let history = self.get_commit_chain(prev_commit);
+            if history.is_empty() {
+                return None; // Previous commit does not exist
+            }
+            let p = history[0].lock().unwrap();
+            if let RepoFileType::Delete = p.get_type(0x05) {
+                // If the previous commit was a delete we start from scratch (which is easier done by calling the function again on the same folder)
+                drop(p);
+                return self.create_folder_commit(None, location, is_root);
+            }
+            drop(p);
+            
+
+            // Checking for a rename
+            let mut old_name = None;
+            for item in history.iter() {
+                let temp = item.lock().unwrap();
+                if let RepoFileType::NewFolder(new_folder) = temp.get_type(0x0D) {
+                    old_name = Some(new_folder.clone());
+                    drop(temp);
+                    break;
+                }
+                drop(temp);
+            }
+
+            if let Some(old) = old_name {
+                if old != name && !is_root {
+                    repo_file_type.push(RepoFileType::NewFolder(name));
+                }
+            } else {
+                return None; // couldn't find an original file name
+            };
+
+            // Getting the old file list
+            let mut old_sub_commits = if let Some(data) = commit_generation::get_old_sub_info(self, prev_commit) {
+                data
+            } else {
+                return None;
+            };
+            
+            let mut content = io::get_folder_content(location);
+            let mut left_over_commits = Vec::<commit_generation::OldSub>::new();
+
+            let mut commits = Vec::<U232>::new();
+            let mut appended = Vec::<u8>::new();
+
+            let mut changed = false; // Just comparing the commit ids should be sufficient, but we are not taking the chances
+
+            // Iterating over the old_subcommits and content, looking for clean matches, processing those, and missfits get listed
+            while let Some(sub) = old_sub_commits.pop() { //We have to iterate over the old_commits first, so the folder hash remains the same if no files changed
+                let mut sub_commit = None;
+                let mut index = 0;
+                for item in content.iter() {
+                    let name = item.file_name().expect("Path does not contain file/folder name, somehow").to_str().expect("a os string is not a str, somehow").to_string();
+
+                    if sub.name == name {
+                        // We have got a match 
+                        if item.is_dir() && sub.is_folder {
+                            sub_commit = self.create_folder_commit(Some(sub.id), item.as_path(), false);
+                        } else if item.is_file() && !sub.is_folder {
+                            sub_commit = self.create_file_commit(Some(sub.id), item.as_path());
+                        } else {
+                            // Folders can't have the same name as files, one was renamed/removed, and another type was created
+                            break;
+                        }
+
+                        if let None = sub_commit {
+                            return None; // Something went wrong, abort
+                        }
+                        break;
+                    }
+
+                    index += 1;
+                }
+
+                if let Some(commit) = sub_commit {
+                    if sub.id != commit {
+                        changed = true;
+                    }
+
+                    appended.append(&mut commit.to_be_bytes().to_vec());
+                    commits.push(commit);
+                    content.remove(index);
+                } else {
+                    // No clean match was found for this one, we add it to the left overs
+                    left_over_commits.push(sub);
+                }
+            }
+
+            // if there has been only perfect matches, we may exit
+            if left_over_commits.is_empty() && content.is_empty() {
+                // in case nothing changed, no renaming, we may just return the previous commit
+                if !changed && repo_file_type.is_empty() {
+                    return Some(prev_commit);
+                }
+            } else {
+                // We process the remaining files/folders, trying to match them to the remaining old sub commits, if not possible creating new entries
+                for item in content {
+                    let commit_to_add = if item.is_file() {
+                        
+                        let res = commit_generation::process_leftover_file(self, &mut left_over_commits, &item, location);
+
+                        match res {
+                            Ok(index) => {
+                                let commit = left_over_commits[index].id;
+                                left_over_commits.remove(index);
+
+                                self.create_file_commit(Some(commit), item.as_path())
+                            },
+                            Err(fine) => {
+                                if fine {
+                                    self.create_file_commit(None, item.as_path())
+                                } else {
+                                    return None;
+                                }
+                            }
+                        }
+                    } else {
+                        let res = commit_generation::process_leftover_folder(self, &left_over_commits, &item);
+                        
+                        match res {
+                            Ok(index) => {
+                                let commit = left_over_commits[index].id;
+                                left_over_commits.remove(index);
+
+                                self.create_folder_commit(Some(commit), item.as_path(), false)
+                            },
+                            Err(fine) => {
+                                if fine {
+                                    self.create_folder_commit(None, item.as_path(), false)
+                                } else {
+                                    return None;
+                                }
+                            }
+                        }
+                    };
+
+                    if let Some(commit) = commit_to_add {
+                        appended.append(&mut commit.to_be_bytes().to_vec());
+                        commits.push(commit);
+                    }
+                }
+
+
+                // Remaing old commits need to be marked as to be delete
+                for old in left_over_commits {
+                    let repo = RepoFile::new(
+                        0,
+                        common::bytes_to_hex_string(self.get_free_commit_id_for_delete(&old.id).to_be_bytes()),
+                        vec![RepoFileType::Delete; 1],
+                        old.id,
+                        U232::new()
+                    );
+    
+                    let commit = self.insert_commit(Mutex::new(repo));
+
+                    appended.append(&mut commit.to_be_bytes().to_vec());
+                    commits.push(commit);
+                }
+            }
+        } else {
+            // new commit
+            let content = io::get_folder_content(location);
+
+            // Generating all sub commits
+            for item in content {
+                let res =if item.is_file() {
+                    self.create_file_commit(None, item.as_path())
+                } else {
+                    // it is a directory
+                    self.create_folder_commit(None, item.as_path(), false)
+                };
+
+                if let Some(com) = res {
+                    appended.append(&mut com.to_be_bytes().to_vec());
+                    commits.push(com);
+                } else {
+                    // As the item excists, it must be able to generate a commit
+                    return None; // Something went wrong, aborting
+                }
+            }
+            let name = if is_root {
+                "".to_string()
+            } else {
+                name
+            };
+            repo_file_type.push(RepoFileType::NewFolder(name));
+        }
+
+        // Generating folder hash
+        let folder_hash = self.get_free_commit_id(&common::hash_data(appended.as_slice()));
+        
+        repo_file_type.push(RepoFileType::Folder(commits));
+
+        let id = self.insert_commit(
+            Mutex::new(
+            RepoFile::new(
+                0,
+                common::bytes_to_hex_string(folder_hash.to_be_bytes()),
+                repo_file_type,
+                final_prev_commit,
+                U232::new()
+        )));
+        return Some(id);
     }
 
     fn create_file_commit(&mut self, prev_commit: Option<U232>, location: &Path) -> Option<U232> {
@@ -360,11 +666,23 @@ impl StorageRepo {
             new_hash,
             rename,
             prev_com_id) = if let Some(old_id) = prev_commit {
+
+            let p = if let Ok(commit) = self.get_commit(old_id) {
+                commit
+            } else {
+                return None;
+            }.lock().unwrap();
+            if let RepoFileType::Delete = p.get_type(0x05) {
+                // If the previous commit was a delete we start from scratch (which is easier done by calling the function again on the same folder)
+                drop(p);
+                return self.create_file_commit(None, location);
+            }
+            drop(p);
             
             if let Ok(new_data) = io::read_bytes(location) {
                 let new_hash = common::hash_data(new_data.as_slice());
 
-                if new_hash == old_id {
+                if new_hash.equal_224(&old_id) {
                     // no changes in the file, return the Prev commit
                     return Some(old_id);
                 }
@@ -379,7 +697,6 @@ impl StorageRepo {
 
                 (new_data, old_data, new_hash, rename, old_id)
              } else {
-                //TODO handling this case properly
                 return None;
             }
         } else {
@@ -389,7 +706,6 @@ impl StorageRepo {
 
                 (new_data, vec![0_u8;0], new_hash, Some(location.file_name()), U232::new())
             } else {
-                //TODO handling this case properly
                 return None;
             }
         };
@@ -420,124 +736,7 @@ impl StorageRepo {
         }
 
         // Edit
-        let mut diff = Vec::<(usize, u8)>::new();
-        let mut index = 0;
-        while index < new_data.len() {
-            if new_data[index] != old_data[index] {
-                diff.push((index, new_data[index]));
-            }
-            index = index + 1;
-        }
-
-        let mut instructions = Vec::<Instruction>::new();
-
-        
-        let pointer_size: usize = ((new_data.len().ilog2()) / 8 + 1).try_into().unwrap();
-        let ins_overhead = 1 + pointer_size + 1; // Type Byte + Pointer Bytes + Minimum Bytes to define Length
-
-        // Generating instructions, improvements here can severely reduce file size and instruction count, without changing compatibility
-        index = 0;
-        while index < diff.len() {
-            let mut add_index = 1;
-
-            let mut block = vec![diff[index].1;1];
-
-            let mut single_type: bool = true;
-
-            // Building a sequence to process in the instruction
-            while (index + add_index) < diff.len() {
-                let (last_offset, _o) = diff[index + add_index - 1];
-                let (offset, val) = diff[index + add_index];
-
-                if offset > last_offset + 1 {
-                    // Meaning there is at least one unchanged byte interrupting the sequence, it maybe worth just writing those again
-                    if offset > last_offset + ins_overhead {
-                        // The gap is so large, it is more efficient to just start a new instruction
-                        break;
-                    } else if single_type && block[0] != val && block.len() > ins_overhead {
-                        // Maintain single type and exit
-                        break;
-
-                    } else {
-                        // We need to add the inbetween bytes to the block
-                        let mut add_offset = 1;
-                        while last_offset + add_offset <= offset { // = as we just let it also add the new item
-                            let val = new_data[last_offset + add_offset];
-                            
-                            // If this has been a single type sequence we have to check
-                            if single_type && val != block[0] {
-                                if (block.len() - add_offset + 1) > ins_overhead {
-                                    // We remove the items that are not needed and exit
-                                    block = block[..(block.len() - add_offset + 1)].to_vec();
-                                    break;
-                                } else {
-                                    single_type = false;
-                                    block.push(val);
-                                }
-                            } else {
-                                block.push(val);
-                            }
-
-                            add_offset = add_offset + 1;
-                        }
-                    }
-                    
-                } else {
-                    // This is a simple sequence
-
-                    // However we still want to check if we are still a single_type sequence
-                    if single_type && block[0] != val {
-                        // single_type sequence would get interrupted when adding this, we need to compute if it is worth making a new instruction, or switchting type
-                        if block.len() > ins_overhead {
-                            // We end this sequence
-                            break;
-                        } else {
-                            // Not worth it, continuing
-                            single_type = false;
-                            block.push(val);
-                        }
-                    } else {
-                        // We just continue
-                        block.push(val);
-                    }
-                }
-
-                add_index = add_index + 1;
-            }
-
-            // Constructing the Instruction
-            let op = if single_type {
-                let val = block[0]; 
-                if val == 0x00 {
-                    Operation::Blank
-                } else {
-                    Operation::SetTo(val)
-                }
-            } else {
-                // TODO check existing bytes for match to do a copy on
-                Operation::Replace(block.clone())
-            };
-
-            let ins = Instruction::new (
-                diff[index].0,
-                block.len(),
-                op
-            );
-
-            // we test the instructions to see if we get the correct result in the end
-            ins.run_instruction(&mut old_data);
-
-            instructions.push(ins);
-
-            index = index + add_index; //- 1;
-        }
-
-        // Check of the instructions:
-        if new_hash != common::hash_data(old_data.as_slice()) {
-            panic!("TODO write error handling for when instructions are incorrectly generating, producing a file that does not match\nTarget Hash:{}\nResulting Hash:{}",new_hash,common::hash_data(old_data.as_slice()));
-        }
-        
-        content.push(RepoFileType::Edit(instructions, pointer_size));
+        content.push(commit_generation::generate_file_instructions(old_data, new_data));
 
         let repo_file = RepoFile::new(
             0, // Current Version
@@ -697,7 +896,7 @@ impl StorageRepo {
             newest_commit.get_type(0x0F).clone()
         };
 
-        // Getting the new folder instruction to the get the 
+        // Getting the new folder instruction to the get the name
         for item in full_history {
             let temp = item.lock().unwrap();
 
@@ -723,5 +922,3 @@ impl StorageRepo {
 
     }
 }
-
-

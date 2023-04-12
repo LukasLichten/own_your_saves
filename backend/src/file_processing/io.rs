@@ -99,6 +99,50 @@ pub fn copy_folder(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+pub fn move_folder(from: &Path, to: &Path) -> io::Result<()> {
+    move_folder_int(from, to, to)
+}
+
+fn move_folder_int(from: &Path, to: &Path, og_to: &Path) -> io::Result<()> {
+    fn is_contained(from: &Path, to: &Path) -> bool {
+        for ancestor in to.ancestors() {
+            if ancestor == from {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    if from == og_to {
+        return Ok(());
+    }
+    
+    create_folder(to)?;
+
+    if is_contained(from, og_to) {
+        let content = get_folder_content(from);
+
+        let target = PathBuf::from(to);
+
+        for item in content {
+            let name = item.file_name().unwrap();
+            let mut target = target.clone();
+            target.push(name);
+
+            if is_contained(item.as_path(), to) {
+                move_folder_int(item.as_path(), target.as_path(), og_to)?;
+            } else {
+                fs::rename(item.as_path(), target.as_path())?;
+            }
+        }
+
+        Ok(())
+    } else {
+        fs::rename(from, to)
+    }
+}
+
 pub fn copy_file(from: &Path, to: &Path) -> io::Result<u64> {
     fs::copy(from, to)
 }
@@ -289,3 +333,19 @@ pub fn u64_to_usize(val: u64) -> usize {
     val.try_into().unwrap_or_default() //this might cause problems for 32bit, but f them
 }
 
+pub fn generate_vec_diff<T : Eq + Clone>(old_data: &Vec<T>, new_data: &Vec<T>) -> Option<Vec<(usize, T)>> {
+    if old_data.len() != new_data.len() {
+        return None;
+    }
+
+    let mut diff = Vec::<(usize, T)>::new();
+    let mut index = 0;
+    while index < new_data.len() {
+        if new_data[index] != old_data[index] {
+            diff.push((index, new_data[index].clone()));
+        }
+        index = index + 1;
+    }
+
+    Some(diff)
+}

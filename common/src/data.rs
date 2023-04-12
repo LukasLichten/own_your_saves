@@ -232,7 +232,7 @@ pub struct Branch {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Folder {
     pub folder_token: Uuid,
-    pub folder_name: String,
+    pub folder_name: Option<String>,
     pub content: Option<Vec<String>>
 }
 
@@ -255,5 +255,6 @@ pub struct CreateCommit {
     pub token: Option<Uuid>,
     pub folder_token: Uuid,
     pub repo_name: String,
-    pub previos_commit: U232
+    pub previous_commit: Option<U232>,
+    pub commit_message: Option<String>
 }

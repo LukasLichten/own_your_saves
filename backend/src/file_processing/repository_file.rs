@@ -294,6 +294,10 @@ impl RepoFile {
         &RepoFileType::None
     }
 
+    pub fn get_content<'a>(&'a self) -> &'a Vec<RepoFileType> {
+        &self.content
+    }
+
     // Returns the pointer size, or the previous commit which may contain it
     pub fn get_pointer_size(& self) -> Result<usize, U232> {
         if let RepoFileType::Resize(val) = self.get_type(0x08) {
@@ -436,6 +440,28 @@ impl Writtable for Head {
         }
 
         data
+    }
+}
+
+impl CommitInfo {
+    pub fn get_text(& self) -> String {
+        self.text.clone()
+    }
+
+    pub fn get_user(& self) -> u32 {
+        self.user_id
+    }
+
+    pub fn get_device(& self) -> u8 {
+        self.device_id
+    }
+
+    pub fn get_timestamp(& self) -> u64 {
+        self.timestamp
+    }
+
+    pub fn new(user_id: u32, device_id: u8, text: String, timestamp: u64) -> Self {
+        CommitInfo { user_id, device_id, text, timestamp }
     }
 }
 

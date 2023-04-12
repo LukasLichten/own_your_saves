@@ -3,7 +3,7 @@ use actix_web_lab::__reexports::tokio::sync::RwLock;
 use common::{data::{Reply, RequestRepository, Repository, AccessType, RepositoryAccess, Branch, CreateCommit}, U232, LargeU};
 use rusqlite::Connection;
 
-use crate::{database, api::handle_auth_request, file_processing::{RepoController, self}};
+use crate::{database, api::handle_auth_request, file_processing::{RepoController, self, repository_file::CommitInfo}};
 
 #[get("/repo/info")]
 pub async fn get_repo(data: Data<Connection>, request: Json<RequestRepository>) -> Json<Reply<Repository>> {
@@ -294,26 +294,62 @@ pub async fn create_commit(controller: Data<RwLock<RepoController>>, data: Data<
                     return Json(Reply::Error { token: handle.token });
                 }
 
+                // Applying the folder_name
+                let build_path = if let Some(name) = folder.folder_name {
+                    let mut target = path.clone();
+                    target.push(name);
+                    if file_processing::io::move_folder(path.as_path(), target.as_path()).is_err() {
+                        return Json(Reply::Error { token: handle.token });
+                    }
+                    target
+                } else {
+                    let content = file_processing::io::get_folder_content(path.as_path());
+                    if content.len() == 1 {
+                        // Single file commit
+                        content[0].clone()
+                    } else {
+                        path.clone()
+                    }
+                };
+
                 let conn = controller.read().await;
                 if let Some(repo) = conn.get_repo(&repo_db.repo_name) {
                     let mut repo = repo.lock().unwrap();
                     
                     // Checking for the previous commit
-                    if request.previos_commit != U232::new() {
-                        if let Err(_) = repo.get_commit(request.previos_commit) {
+                    let previous_commit = if let Some(prev) = request.previous_commit {
+                        if prev == U232::new() {
+                            None
+                        } else if let Err(_) = repo.get_commit(prev) {
                             // Previous commit could not be found
                             drop(repo);
                             drop(conn);
                             return Json(Reply::NotFound { token: handle.token });
+                        } else {
+                            Some(prev)
                         }
-                    }
+                    } else {
+                        None
+                    };
 
-                    // TODO handle folder.folder_name (and defining root folder in general)
-                    // TODO adding commit info
-                    // TODO handle single file commits
-                    // TODO finish implementing repo.create_commit function
+                    
                     // Creating the commit
-                    if let Some(commit) = repo.create_commit(request.previos_commit, path.as_path()) { 
+                    if let Some(commit) = repo.create_commit(previous_commit, build_path.as_path(), build_path.eq(&path)) {
+                        if previous_commit != Some(commit.clone()) {
+                            let time =if let Ok(t) = chrono::Utc::now().timestamp().try_into() {
+                                t
+                            } else {
+                                0
+                            };
+                            let text = if let Some(text) = &request.commit_message {
+                                text.clone()
+                            } else {
+                                "".to_string()
+                            };
+
+                            repo.set_commit_info(commit, CommitInfo::new(handle.user_id, handle.device_id, text, time));
+                        }
+
                         drop(repo);
                         drop(conn);
 
@@ -321,7 +357,7 @@ pub async fn create_commit(controller: Data<RwLock<RepoController>>, data: Data<
                         database::delete_temp_folder(&data, folder.folder_token);
                         file_processing::delete_temp_folder(&data, folder.folder_token);
                         // No need to worry about sub folders, as we inforce that there should not be any
-                        // although during execution of this, command some might have been created
+                        // although during execution of this command some might have been created
                         // we assume proper usage of the API (high expectations, I know, but this can only be done by the client also running this request, no one else has the folder token)
 
                         return Json(Reply::Ok { value: commit, token: handle.token });
